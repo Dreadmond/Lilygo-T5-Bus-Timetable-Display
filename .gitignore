@@ -1,0 +1,23 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE
+.vscode/
+*.code-workspace
+
+# Build artifacts
+*.bin
+*.elf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*~
+
+# Local secrets (never commit)
+src/secrets.h
