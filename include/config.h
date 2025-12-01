@@ -101,8 +101,8 @@
 // ----------------------------------------------------------------------------
 // OTA UPDATE CONFIGURATION
 // ----------------------------------------------------------------------------
-#define OTA_GITHUB_USER "matt"  // UPDATE THIS to your actual GitHub username
-#define OTA_GITHUB_REPO "bus-timetable-eink"
+#define OTA_GITHUB_USER "Dreadmond"
+#define OTA_GITHUB_REPO "Lilygo-T5-Bus-Timetable-Display"
 #define OTA_CHECK_INTERVAL_MS 3600000          // Check for updates every hour
 
 // ----------------------------------------------------------------------------
