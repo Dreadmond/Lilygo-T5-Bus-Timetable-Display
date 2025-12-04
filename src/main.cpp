@@ -124,6 +124,17 @@ void setup() {
         DEBUG_PRINTLN("Initializing OTA...");
         otaManager.init();
         
+        // Check for OTA updates on startup
+        DEBUG_PRINTLN("Checking for firmware updates...");
+        if (otaManager.checkForUpdate()) {
+            DEBUG_PRINTLN("Update available! Installing...");
+            display.showLoading("Installing update...");
+            otaManager.performUpdate(otaManager.getUpdateUrl());
+            // If we get here, update failed
+            display.showError("Update failed");
+            delay(3000);
+        }
+        
         // Initial battery read
         readBattery();
         
