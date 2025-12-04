@@ -128,6 +128,7 @@ private:
     void logLayoutTable() const;
     BusDeparture buildFallbackDeparture(int slotIndex, const String& directionLabel, bool placeholderMode) const;
     String formatTimeOffset(int minutesAhead) const;
+    int calculateLeaveIn(const BusDeparture& dep) const;
     void drawScaledTextInRect(int left, int top, int width, int height, const String& text, float scale, TextAlignment alignment);
     void drawScaledGlyphRun(const String& text, int startX, int baselineY, float scale);
     void drawScaledGlyph(const GFXglyph* glyph, const uint8_t* bitmap, int byteWidth, int startX, int baselineY, float scale);

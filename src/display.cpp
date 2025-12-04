@@ -80,6 +80,24 @@ static const LayoutSlot& layoutSlot(LayoutRegion id) {
 
 // No placeholder data - only show real bus times
 
+// Helper: Calculate fresh "leave in" minutes from departure time string
+int DisplayManager::calculateLeaveIn(const BusDeparture& dep) const {
+    int minutesUntil = dep.minutesUntilDeparture;  // fallback
+    if (dep.departureTime.length() >= 5) {
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo)) {
+            int depHour = dep.departureTime.substring(0, 2).toInt();
+            int depMin = dep.departureTime.substring(3, 5).toInt();
+            int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+            int depMinutes = depHour * 60 + depMin;
+            if (depMinutes < nowMinutes - 60) depMinutes += 24 * 60;  // overnight
+            minutesUntil = depMinutes - nowMinutes;
+        }
+    }
+    int leaveIn = minutesUntil - dep.walkingTimeMinutes;
+    return (leaveIn < 0) ? 0 : leaveIn;
+}
+
 DisplayManager::DisplayManager() {
     frameBuffer = nullptr;
     initialized = false;
@@ -210,8 +228,8 @@ void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
         int cardTop = cardAreaTop + i * (CARD_HEIGHT + CARD_SPACING);
         drawBusCard(i, departures[i], i == 0, false,
                     cardTop, CARD_HEIGHT, cardLeft, cardWidth);
-        int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
-        if (leaveIn < 0) leaveIn = 0;
+        // Calculate fresh leaveIn from departure time
+        int leaveIn = calculateLeaveIn(departures[i]);
         lastLeaveIn[i] = leaveIn;
     }
     
@@ -303,8 +321,8 @@ void DisplayManager::drawBusCard(int cardIndex, const BusDeparture& departure, b
     String infoBlock = departure.stopName + "\n" + destination + "\n" + String(walk) + "\n" + statusLine;
     drawWrappedTextBlock(infoColLeft, innerTop, infoColWidth, innerHeight, infoBlock, false);
     
-    int leaveIn = departure.minutesUntilDeparture - departure.walkingTimeMinutes;
-    if (leaveIn < 0) leaveIn = 0;
+    // Calculate fresh leaveIn from actual departure time
+    int leaveIn = calculateLeaveIn(departure);
     String timeLine = departure.departureTime;
     String leaveLine = (leaveIn <= 0)
         ? "Leave now"
