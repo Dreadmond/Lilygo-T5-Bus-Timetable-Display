@@ -83,8 +83,11 @@ void OTAUpdateManager::init() {
         html += "<div class='info'>Free Heap</div><div class='value'>" + String(ESP.getFreeHeap() / 1024) + " KB</div>";
         html += "</div>";
         html += "<div class='card'>";
-        html += "<div class='info'>OTA Update</div>";
-        html += "<div class='value'>Use PlatformIO or Arduino IDE</div>";
+        html += "<div class='info'>Firmware Update</div>";
+        html += "<form method='POST' action='/update' enctype='multipart/form-data'>";
+        html += "<input type='file' name='firmware' accept='.bin' style='color:#fff;margin:15px 0;'><br>";
+        html += "<input type='submit' value='Upload Firmware' class='btn'>";
+        html += "</form>";
         html += "<p style='color:#666;font-size:0.9em;margin-top:15px;'>Device: " + String(DEVICE_NAME) + "</p>";
         html += "</div>";
         html += "</body></html>";
@@ -107,6 +110,36 @@ void OTAUpdateManager::init() {
         otaWebServer.send(200, "text/plain", "Rebooting...");
         delay(500);
         ESP.restart();
+    });
+    
+    // Web-based firmware upload
+    otaWebServer.on("/update", HTTP_POST, []() {
+        otaWebServer.sendHeader("Connection", "close");
+        if (Update.hasError()) {
+            otaWebServer.send(500, "text/html", "<html><body style='background:#1a1a1a;color:#fff;text-align:center;padding:50px;font-family:system-ui;'><h1>Update Failed!</h1><p><a href='/' style='color:#FFB81C;'>Go Back</a></p></body></html>");
+        } else {
+            otaWebServer.send(200, "text/html", "<html><body style='background:#1a1a1a;color:#fff;text-align:center;padding:50px;font-family:system-ui;'><h1>Update Success!</h1><p>Rebooting...</p></body></html>");
+            delay(500);
+            ESP.restart();
+        }
+    }, []() {
+        HTTPUpload& upload = otaWebServer.upload();
+        if (upload.status == UPLOAD_FILE_START) {
+            DEBUG_PRINTF("Update: %s\n", upload.filename.c_str());
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                Update.printError(Serial);
+            }
+        } else if (upload.status == UPLOAD_FILE_WRITE) {
+            if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+                Update.printError(Serial);
+            }
+        } else if (upload.status == UPLOAD_FILE_END) {
+            if (Update.end(true)) {
+                DEBUG_PRINTF("Update Success: %u bytes\n", upload.totalSize);
+            } else {
+                Update.printError(Serial);
+            }
+        }
     });
     
     otaWebServer.begin();

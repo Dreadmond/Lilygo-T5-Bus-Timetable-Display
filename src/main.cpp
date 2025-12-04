@@ -21,12 +21,21 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 #include <time.h>
 #include "config.h"
 #include "display.h"
 #include "transport_api.h"
 #include "mqtt_ha.h"
 #include "ota_update.h"
+
+// WiFi configuration portal
+Preferences wifiPrefs;
+WebServer configServer(80);
+DNSServer dnsServer;
+bool configPortalActive = false;
 
 // ============================================================================
 // GLOBAL STATE
@@ -165,6 +174,14 @@ void setup() {
 // ============================================================================
 
 void loop() {
+    // Handle WiFi config portal if active
+    if (configPortalActive) {
+        dnsServer.processNextRequest();
+        configServer.handleClient();
+        delay(10);
+        return;  // Don't run normal loop while in config mode
+    }
+    
     unsigned long now = millis();
     
     // Update current time string
@@ -245,75 +262,137 @@ void loop() {
 // WIFI SETUP
 // ============================================================================
 
-void setupWiFi() {
-    // Disconnect any existing connection
+// Try to connect to WiFi with given credentials
+bool tryWiFiConnect(const char* ssid, const char* password, int timeoutMs) {
     WiFi.disconnect(true);
     delay(100);
-    
-    // Set WiFi mode and power
     WiFi.mode(WIFI_STA);
-    // Try to set maximum power (may not be available on all ESP32 variants)
-    #ifdef WIFI_POWER_19_5dBm
-        WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    #elif defined(WIFI_POWER_19dBm)
-        WiFi.setTxPower(WIFI_POWER_19dBm);
-    #endif
-    WiFi.setSleep(false);  // Disable power saving for more reliable connection
+    WiFi.setSleep(false);
     
-    DEBUG_PRINTF("Connecting to %s...\n", WIFI_SSID);
-    
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    DEBUG_PRINTF("Connecting to %s...\n", ssid);
+    WiFi.begin(ssid, password);
     
     unsigned long startTime = millis();
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && 
-           (millis() - startTime) < WIFI_CONNECT_TIMEOUT_MS) {
-        delay(WIFI_RETRY_DELAY_MS);
+    while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < timeoutMs) {
+        delay(500);
         DEBUG_PRINT(".");
-        attempts++;
-        
-        // Print status every 5 seconds for debugging
-        if (attempts % 10 == 0) {
-            wl_status_t status = WiFi.status();
-            DEBUG_PRINTF("\n[%lu ms] WiFi status: %d", millis() - startTime, status);
-            switch(status) {
-                case WL_IDLE_STATUS: DEBUG_PRINT(" (IDLE)"); break;
-                case WL_NO_SSID_AVAIL: DEBUG_PRINT(" (SSID not found)"); break;
-                case WL_SCAN_COMPLETED: DEBUG_PRINT(" (Scan done)"); break;
-                case WL_CONNECTED: DEBUG_PRINT(" (Connected!)"); break;
-                case WL_CONNECT_FAILED: DEBUG_PRINT(" (Connect failed)"); break;
-                case WL_CONNECTION_LOST: DEBUG_PRINT(" (Connection lost)"); break;
-                case WL_DISCONNECTED: DEBUG_PRINT(" (Disconnected)"); break;
-                default: DEBUG_PRINT(" (Unknown)"); break;
-            }
-            DEBUG_PRINTLN();
-        }
     }
-    
     DEBUG_PRINTLN();
     
-    wl_status_t finalStatus = WiFi.status();
-    if (finalStatus == WL_CONNECTED) {
+    return WiFi.status() == WL_CONNECTED;
+}
+
+// Start WiFi configuration portal
+void startConfigPortal() {
+    DEBUG_PRINTLN("Starting WiFi configuration portal...");
+    display.showLoading("WiFi Setup Mode\nConnect to: BusTimetable\nThen visit: 192.168.4.1");
+    
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("BusTimetable", "");  // Open network
+    delay(100);
+    
+    IPAddress apIP(192, 168, 4, 1);
+    WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+    
+    // DNS server to redirect all domains to our IP (captive portal)
+    dnsServer.start(53, "*", apIP);
+    
+    // Serve configuration page
+    configServer.on("/", HTTP_GET, []() {
+        String html = "<!DOCTYPE html><html><head>";
+        html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+        html += "<title>Bus Timetable WiFi Setup</title>";
+        html += "<style>";
+        html += "body{font-family:system-ui;background:#1a1a1a;color:#fff;margin:0;padding:20px;text-align:center;}";
+        html += "h1{color:#FFB81C;}";
+        html += ".card{background:#2a2a2a;border-radius:15px;padding:20px;max-width:350px;margin:20px auto;}";
+        html += "input{width:100%;padding:12px;margin:8px 0;border:none;border-radius:8px;font-size:16px;box-sizing:border-box;}";
+        html += ".btn{background:#FFB81C;color:#1a1a1a;border:none;padding:15px;border-radius:8px;font-size:16px;cursor:pointer;width:100%;}";
+        html += "</style></head><body>";
+        html += "<h1>🚌 Bus Timetable</h1>";
+        html += "<p>WiFi Configuration</p>";
+        html += "<div class='card'>";
+        html += "<form action='/save' method='POST'>";
+        html += "<input type='text' name='ssid' placeholder='WiFi Network Name' required>";
+        html += "<input type='password' name='pass' placeholder='WiFi Password'>";
+        html += "<input type='submit' value='Connect' class='btn'>";
+        html += "</form></div>";
+        html += "</body></html>";
+        configServer.send(200, "text/html", html);
+    });
+    
+    configServer.on("/save", HTTP_POST, []() {
+        String ssid = configServer.arg("ssid");
+        String pass = configServer.arg("pass");
+        
+        if (ssid.length() > 0) {
+            // Save credentials
+            wifiPrefs.begin("wifi", false);
+            wifiPrefs.putString("ssid", ssid);
+            wifiPrefs.putString("pass", pass);
+            wifiPrefs.end();
+            
+            String html = "<!DOCTYPE html><html><head>";
+            html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+            html += "<style>body{font-family:system-ui;background:#1a1a1a;color:#fff;text-align:center;padding:50px;}</style>";
+            html += "</head><body>";
+            html += "<h1>✓ Saved!</h1>";
+            html += "<p>Rebooting to connect to: " + ssid + "</p>";
+            html += "</body></html>";
+            configServer.send(200, "text/html", html);
+            
+            delay(2000);
+            ESP.restart();
+        } else {
+            configServer.send(400, "text/plain", "SSID required");
+        }
+    });
+    
+    // Captive portal detection endpoints
+    configServer.on("/generate_204", HTTP_GET, []() { configServer.sendHeader("Location", "/"); configServer.send(302); });
+    configServer.on("/fwlink", HTTP_GET, []() { configServer.sendHeader("Location", "/"); configServer.send(302); });
+    configServer.onNotFound([]() { configServer.sendHeader("Location", "/"); configServer.send(302); });
+    
+    configServer.begin();
+    configPortalActive = true;
+    
+    DEBUG_PRINTLN("Config portal started at 192.168.4.1");
+    DEBUG_PRINTLN("Connect to WiFi: BusTimetable (no password)");
+}
+
+void setupWiFi() {
+    // First, try saved credentials from Preferences
+    wifiPrefs.begin("wifi", true);  // Read-only
+    String savedSSID = wifiPrefs.getString("ssid", "");
+    String savedPass = wifiPrefs.getString("pass", "");
+    wifiPrefs.end();
+    
+    if (savedSSID.length() > 0) {
+        DEBUG_PRINTLN("Trying saved WiFi credentials...");
+        if (tryWiFiConnect(savedSSID.c_str(), savedPass.c_str(), WIFI_CONNECT_TIMEOUT_MS)) {
+            wifiConnected = true;
+            DEBUG_PRINTLN("WiFi connected using saved credentials!");
+            DEBUG_PRINTF("IP Address: %s\n", WiFi.localIP().toString().c_str());
+            DEBUG_PRINTF("Signal strength: %d dBm\n", WiFi.RSSI());
+            return;
+        }
+        DEBUG_PRINTLN("Saved credentials failed.");
+    }
+    
+    // Try hardcoded credentials
+    DEBUG_PRINTLN("Trying default WiFi credentials...");
+    if (tryWiFiConnect(WIFI_SSID, WIFI_PASSWORD, WIFI_CONNECT_TIMEOUT_MS)) {
         wifiConnected = true;
         DEBUG_PRINTLN("WiFi connected!");
         DEBUG_PRINTF("IP Address: %s\n", WiFi.localIP().toString().c_str());
-        DEBUG_PRINTF("Subnet Mask: %s\n", WiFi.subnetMask().toString().c_str());
-        DEBUG_PRINTF("Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
         DEBUG_PRINTF("Signal strength: %d dBm\n", WiFi.RSSI());
-    } else {
-        wifiConnected = false;
-        DEBUG_PRINTF("WiFi connection failed! Status code: %d\n", finalStatus);
-        DEBUG_PRINTF("Connection attempt took %lu ms\n", millis() - startTime);
-        
-        // Additional diagnostics
-        if (finalStatus == WL_NO_SSID_AVAIL) {
-            DEBUG_PRINTLN("ERROR: SSID not found. Check that the network is in range and 2.4GHz.");
-        } else if (finalStatus == WL_CONNECT_FAILED) {
-            DEBUG_PRINTLN("ERROR: Connection failed. Check WiFi password.");
-        } else if (finalStatus == WL_DISCONNECTED) {
-            DEBUG_PRINTLN("ERROR: Disconnected. Network may have rejected connection.");
-        }
+        return;
     }
+    
+    // All connection attempts failed - start config portal
+    DEBUG_PRINTLN("All WiFi connection attempts failed.");
+    wifiConnected = false;
+    startConfigPortal();
 }
 
 // ============================================================================
