@@ -11,7 +11,7 @@
 // ----------------------------------------------------------------------------
 // VERSION INFO
 // ----------------------------------------------------------------------------
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0"
 #define DEVICE_NAME "bus-timetable-eink"
 #define DEVICE_FRIENDLY_NAME "Bus Timetable Display"
 
@@ -47,25 +47,28 @@
 #define TRANSPORT_API_KEY SECRET_TRANSPORT_API_KEY
 #define TRANSPORT_API_BASE "https://transportapi.com"
 
-// Bus stops configuration (from your React app)
-// Cheltenham direction stops
-#define STOP_HARE_HOUNDS "1600GL1187"
-#define STOP_ST_JOHNS "1600GLA577"
-#define STOP_LIBRARY "1600GLA569"
+// Bus stops configuration - To Cheltenham direction
+// From 88 Parton Road, GL3 2AY
+#define STOP_LIBRARY "1600GLA569"           // Churchdown Library - closest (~115m)
+#define STOP_COMMUNITY "1600GL1189"         // Opp Community Centre - Cheltenham direction (~300m)
+#define STOP_HARE_HOUNDS "1600GL1187"       // Hare & Hounds (~400m)
+#define STOP_ST_JOHNS "1600GLA577"          // St John's Church (~600m)
 
-// Churchdown direction stops  
+// Churchdown direction stops (from Cheltenham)
 #define STOP_PROM_3 "1600GLA36692"
 #define STOP_PROM_5 "1600GL1076"
 
-// Walking time overrides (minutes)
-#define WALK_TIME_HARE_HOUNDS 12
-#define WALK_TIME_ST_JOHNS 5
-#define WALK_TIME_LIBRARY 4
-#define WALK_TIME_CHELTENHAM 2
+// Walking times (minutes) from 88 Parton Road, GL3 2AY
+// Adjusted for Parkinson's - slower pace, rest breaks, getting ready, buffer to arrive early
+#define WALK_TIME_LIBRARY 10        // Closest stop ~115m - allow 10 min
+#define WALK_TIME_COMMUNITY 15      // ~300m - allow 15 min  
+#define WALK_TIME_HARE_HOUNDS 20    // ~400m - allow 20 min
+#define WALK_TIME_ST_JOHNS 25       // Furthest ~600m - allow 25 min
+#define WALK_TIME_CHELTENHAM 10     // Cheltenham town centre stops
 
 // Routes to filter
-#define BUS_ROUTES {"94", "95", "97", "98"}
-#define NUM_ROUTES 4
+#define BUS_ROUTES {"94", "95", "96", "97", "98"}
+#define NUM_ROUTES 5
 
 // ----------------------------------------------------------------------------
 // DISPLAY CONFIGURATION
@@ -80,10 +83,11 @@
 // ----------------------------------------------------------------------------
 // DATA REFRESH CONFIGURATION
 // ----------------------------------------------------------------------------
-#define BUS_DATA_REFRESH_INTERVAL_MS 600000    // Refresh bus data every 10 minutes (within active hours)
-#define BUS_DATA_REFRESH_SLOW_MS 600000        // Slow refresh every 10 minutes (used for placeholder updates)
-#define ACTIVE_HOURS_START 6                    // 6 AM
-#define ACTIVE_HOURS_END 22                     // 10 PM
+// API usage: 3 stops x 1 refresh every 10 min x 15 hours = 270 calls/day (under 300 limit)
+#define BUS_DATA_REFRESH_INTERVAL_MS 600000    // Refresh bus data every 10 minutes
+#define BUS_DATA_REFRESH_SLOW_MS 600000        // Slow refresh every 10 minutes
+#define ACTIVE_HOURS_START 6                    // 6 AM - screen wakes
+#define ACTIVE_HOURS_END 21                     // 9 PM - screen sleeps
 #define TRANSPORT_API_DAILY_LIMIT 300           // Max API calls allowed per day
 
 // ----------------------------------------------------------------------------
@@ -104,14 +108,6 @@
 #define OTA_GITHUB_USER "Dreadmond"
 #define OTA_GITHUB_REPO "Lilygo-T5-Bus-Timetable-Display"
 #define OTA_CHECK_INTERVAL_MS 3600000          // Check for updates every hour
-
-// ----------------------------------------------------------------------------
-// WEATHER CONFIGURATION (OpenWeatherMap)
-// ----------------------------------------------------------------------------
-#define WEATHER_API_KEY SECRET_OWM_APIKEY
-#define WEATHER_LAT_STR SECRET_LAT
-#define WEATHER_LON_STR SECRET_LON
-#define WEATHER_REFRESH_MS 600000                      // Refresh weather every 10 minutes
 
 // ----------------------------------------------------------------------------
 // DEEP SLEEP CONFIGURATION

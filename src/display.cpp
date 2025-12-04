@@ -78,28 +78,7 @@ static const LayoutSlot& layoutSlot(LayoutRegion id) {
     return kLayoutTable[id];
 }
 
-struct PlaceholderTemplate {
-    const char* bus;
-    const char* stop;
-    const char* destination;
-    int walkMinutes;
-    int departMinutes;
-};
-
-static const PlaceholderTemplate CHELTENHAM_PLACEHOLDERS[] = {
-    {"94", "St John's Church", "Cheltenham Spa", WALK_TIME_ST_JOHNS, 8},
-    {"94", "Churchdown Library", "Cheltenham Spa", WALK_TIME_LIBRARY, 22},
-    {"97", "Hare & Hounds", "Cheltenham Spa", WALK_TIME_HARE_HOUNDS, 37}
-};
-
-static const PlaceholderTemplate CHURCHDOWN_PLACEHOLDERS[] = {
-    {"94", "Promenade (Stop 3)", "Gloucester Transport Hub", WALK_TIME_CHELTENHAM, 6},
-    {"94", "Promenade (Stop 5)", "Churchdown", WALK_TIME_CHELTENHAM, 18},
-    {"97", "Promenade (Stop 3)", "Brockworth", WALK_TIME_CHELTENHAM, 32}
-};
-
-static const int CHELTENHAM_PLACEHOLDER_COUNT = sizeof(CHELTENHAM_PLACEHOLDERS) / sizeof(CHELTENHAM_PLACEHOLDERS[0]);
-static const int CHURCHDOWN_PLACEHOLDER_COUNT = sizeof(CHURCHDOWN_PLACEHOLDERS) / sizeof(CHURCHDOWN_PLACEHOLDERS[0]);
+// No placeholder data - only show real bus times
 
 DisplayManager::DisplayManager() {
     frameBuffer = nullptr;
@@ -179,8 +158,7 @@ void DisplayManager::resetLoadingLog() {
 void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
                                        String currentTime, String direction,
                                        int batteryPercent, bool wifiConnected,
-                                       bool placeholderMode,
-                                       float temperature, String weatherCondition) {
+                                       bool placeholderMode) {
     if (!initialized || !frameBuffer) return;
     resetLoadingLog();
     
@@ -225,22 +203,23 @@ void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
     const int cardWidth = cardsArea.width;
     const int cardAreaTop = cardsArea.y;
     
-    BusDeparture cardDepartures[CARD_MAX_COUNT];
+    // Only show actual departures - no placeholders
     int actualCount = min(count, CARD_MAX_COUNT);
-    for (int i = 0; i < actualCount; i++) {
-        cardDepartures[i] = departures[i];
-    }
-    for (int i = actualCount; i < CARD_MAX_COUNT; i++) {
-        cardDepartures[i] = buildFallbackDeparture(i, direction, placeholderMode);
-    }
     
-    for (int i = 0; i < CARD_MAX_COUNT; i++) {
+    for (int i = 0; i < actualCount; i++) {
         int cardTop = cardAreaTop + i * (CARD_HEIGHT + CARD_SPACING);
-        drawBusCard(i, cardDepartures[i], i == 0, placeholderMode,
+        drawBusCard(i, departures[i], i == 0, false,
                     cardTop, CARD_HEIGHT, cardLeft, cardWidth);
-        int leaveIn = cardDepartures[i].minutesUntilDeparture - cardDepartures[i].walkingTimeMinutes;
+        int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
         if (leaveIn < 0) leaveIn = 0;
         lastLeaveIn[i] = leaveIn;
+    }
+    
+    // Show message if no buses available
+    if (actualCount == 0) {
+        int32_t x = cardLeft + 20;
+        int32_t y = cardAreaTop + 80;
+        writeln((GFXfont*)&FiraSans, "No buses available", &x, &y, frameBuffer);
     }
     
     // Refresh display
@@ -336,29 +315,7 @@ void DisplayManager::drawBusCard(int cardIndex, const BusDeparture& departure, b
     drawScaledTextInRect(leaveAreaLeft, innerTop, leaveAreaWidth, innerHeight, leaveLine, RIGHT_COLUMN_SCALE, TextAlignment::LEFT);
 }
 
-BusDeparture DisplayManager::buildFallbackDeparture(int slotIndex, const String& directionLabel, bool placeholderMode) const {
-    BusDeparture fallback;
-    String normalized = directionLabel;
-    normalized.toLowerCase();
-    bool toCheltenham = normalized.indexOf("cheltenham") >= 0;
-    bool toChurchdown = normalized.indexOf("churchdown") >= 0 || normalized.indexOf("gloucester") >= 0;
-    const PlaceholderTemplate* templates = CHELTENHAM_PLACEHOLDERS;
-    int templateCount = CHELTENHAM_PLACEHOLDER_COUNT;
-    if (toChurchdown && !toCheltenham) {
-        templates = CHURCHDOWN_PLACEHOLDERS;
-        templateCount = CHURCHDOWN_PLACEHOLDER_COUNT;
-    }
-    const PlaceholderTemplate& tpl = templates[slotIndex % templateCount];
-    fallback.busNumber = tpl.bus;
-    fallback.stopName = tpl.stop;
-    fallback.destination = tpl.destination;
-    fallback.walkingTimeMinutes = tpl.walkMinutes;
-    fallback.minutesUntilDeparture = tpl.departMinutes;
-    fallback.departureTime = formatTimeOffset(tpl.departMinutes);
-    fallback.isLive = false;
-    fallback.statusText = placeholderMode ? "Sample timetable" : "Awaiting live data";
-    return fallback;
-}
+// Placeholder function removed - only showing real data
 
 String DisplayManager::formatTimeOffset(int minutesAhead) const {
     if (minutesAhead < 0) minutesAhead = 0;
@@ -473,7 +430,7 @@ void DisplayManager::writePixelToBuffer(int x, int y, uint8_t color) {
 void DisplayManager::updateCountdownsOnly(BusDeparture[], int) {}
 
 
-void DisplayManager::updateFooter(int, bool, float, String) {}
+void DisplayManager::updateFooter(int, bool) {}
 
 void DisplayManager::showError(const String& msg) {
     if (!initialized || !frameBuffer) return;
@@ -493,7 +450,7 @@ void DisplayManager::showLoading(const String& msg) {
     const GFXfont* font = (GFXfont*)&FiraSans;
     int lineHeight = getTextHeight(font) + 8;
     if (!loadingLogActive || (loadingLogCursorY + lineHeight > EPD_HEIGHT - SCREEN_MARGIN)) {
-        memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
+    memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
         int32_t titleX = SCREEN_MARGIN + 10;
         int32_t titleY = SCREEN_MARGIN + 40;
         writeln((GFXfont*)font, "Loading...", &titleX, &titleY, frameBuffer);

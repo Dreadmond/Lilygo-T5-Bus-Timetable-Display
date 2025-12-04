@@ -6,11 +6,11 @@
 
 TransportAPIClient transportApi;
 
-// Stop configurations
+// Stop configurations - ordered by distance from 88 Parton Road
 const BusStop TransportAPIClient::cheltenhamStops[] = {
-    {STOP_HARE_HOUNDS, "Hare & Hounds", WALK_TIME_HARE_HOUNDS},
-    {STOP_ST_JOHNS, "St John's Church", WALK_TIME_ST_JOHNS},
-    {STOP_LIBRARY, "Churchdown Library", WALK_TIME_LIBRARY}
+    {STOP_LIBRARY, "Churchdown Library", WALK_TIME_LIBRARY},       // Closest - 96, 97
+    {STOP_HARE_HOUNDS, "Hare & Hounds", WALK_TIME_HARE_HOUNDS},   // Medium - 94
+    {STOP_ST_JOHNS, "St John's Church", WALK_TIME_ST_JOHNS}        // Further - 98
 };
 
 const BusStop TransportAPIClient::churchdownStops[] = {
@@ -21,8 +21,8 @@ const BusStop TransportAPIClient::churchdownStops[] = {
 const int TransportAPIClient::cheltenhamStopCount = 3;
 const int TransportAPIClient::churchdownStopCount = 2;
 
-const char* TransportAPIClient::targetRoutes[] = {"94", "95", "97", "98"};
-const int TransportAPIClient::routeCount = 4;
+const char* TransportAPIClient::targetRoutes[] = {"94", "95", "96", "97", "98"};
+const int TransportAPIClient::routeCount = 5;
 
 const char* TransportAPIClient::cheltenhamDestinations[] = {
     "cheltenham", "cheltenham spa", "chelt", "promenade"
@@ -31,6 +31,25 @@ const char* TransportAPIClient::cheltenhamDestinations[] = {
 const char* TransportAPIClient::churchdownDestinations[] = {
     "gloucester", "gloucester transport hub", "transport hub", "churchdown"
 };
+
+// Route-to-stop validation: which routes actually stop at which stops
+// Returns true if the route actually stops at the given stop
+bool TransportAPIClient::isValidRouteForStop(const String& route, const char* stopAtcocode) {
+    String stopCode = String(stopAtcocode);
+    
+    // Bus 94 does NOT stop at Churchdown Library (STOP_LIBRARY)
+    if (route == "94" && stopCode == STOP_LIBRARY) {
+        return false;
+    }
+    
+    // Bus 97 does NOT stop at Hare & Hounds (STOP_HARE_HOUNDS)
+    if (route == "97" && stopCode == STOP_HARE_HOUNDS) {
+        return false;
+    }
+    
+    // All other combinations are valid
+    return true;
+}
 
 TransportAPIClient::TransportAPIClient() {
     currentDirection = TO_CHELTENHAM;
@@ -96,7 +115,8 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
     
     HTTPClient http;
     
-    for (int i = 0; i < stopCount && count < maxDepartures; i++) {
+    // Fetch from ALL stops, then deduplicate and filter afterward
+    for (int i = 0; i < stopCount; i++) {
         String url = buildUrl(stops[i].atcocode);
         DEBUG_PRINTF("Fetching: %s\n", stops[i].name);
         
@@ -108,6 +128,12 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
         
         if (httpCode == HTTP_CODE_OK) {
             String response = http.getString();
+            
+            // DEBUG: Print first 500 chars of response to see structure
+            DEBUG_PRINTF("API Response for %s (first 500 chars):\n", stops[i].name);
+            String preview = response.substring(0, 500);
+            DEBUG_PRINTLN(preview);
+            DEBUG_PRINTLN("---");
             
             if (!parseStopDepartures(response, stops[i], departures, count, maxDepartures)) {
                 DEBUG_PRINTF("Warning: Failed to parse departures for %s\n", stops[i].name);
@@ -123,11 +149,14 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
         delay(100);
     }
     
-    // Sort departures by time
+    // Sort departures by "leave in" time (departure time minus walking time)
+    // This shows the most urgent buses first
     if (count > 1) {
         for (int i = 0; i < count - 1; i++) {
             for (int j = i + 1; j < count; j++) {
-                if (departures[j].minutesUntilDeparture < departures[i].minutesUntilDeparture) {
+                int leaveInI = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
+                int leaveInJ = departures[j].minutesUntilDeparture - departures[j].walkingTimeMinutes;
+                if (leaveInJ < leaveInI) {
                     BusDeparture temp = departures[i];
                     departures[i] = departures[j];
                     departures[j] = temp;
@@ -136,7 +165,34 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
         }
     }
     
-    // Filter to only show buses we can catch (after walking)
+    // Remove exact duplicates only (same bus, same stop, same time)
+    // Allow multiple departures of the same route at different times
+    int unique = 0;
+    for (int i = 0; i < count; i++) {
+        bool isDuplicate = false;
+        
+        for (int j = 0; j < unique; j++) {
+            // Only duplicate if same bus AND same stop AND within 2 minutes
+            if (departures[i].busNumber == departures[j].busNumber &&
+                departures[i].stopName == departures[j].stopName) {
+                int timeDiff = departures[i].minutesUntilDeparture - departures[j].minutesUntilDeparture;
+                if (timeDiff >= -2 && timeDiff <= 2) {
+                    isDuplicate = true;
+                    break;
+                }
+            }
+        }
+        
+        if (!isDuplicate) {
+            if (unique != i) {
+                departures[unique] = departures[i];
+            }
+            unique++;
+        }
+    }
+    count = unique;
+    
+    // Filter to only show buses we can catch (leave in >= 0)
     int filtered = 0;
     for (int i = 0; i < count; i++) {
         int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
@@ -164,9 +220,29 @@ bool TransportAPIClient::parseStopDepartures(const String& jsonResponse, const B
         return false;
     }
     
+    // DEBUG: Print what the API says this stop is
+    String apiStopName = doc["name"].as<String>();
+    String apiAtcocode = doc["atcocode"].as<String>();
+    DEBUG_PRINTF("=== API Response for stop ===\n");
+    DEBUG_PRINTF("  Queried: %s (%s)\n", stop.name, stop.atcocode);
+    DEBUG_PRINTF("  API says: %s (%s)\n", apiStopName.c_str(), apiAtcocode.c_str());
+    
+    // Verify the API returned the stop we asked for
+    if (apiAtcocode.length() > 0 && apiAtcocode != stop.atcocode) {
+        DEBUG_PRINTF("WARNING: API returned different stop! Expected %s, got %s\n",
+                    stop.atcocode, apiAtcocode.c_str());
+    }
+    
     JsonObject departuresObj = doc["departures"];
     if (departuresObj.isNull()) {
+        DEBUG_PRINTLN("No departures object in response");
         return false;
+    }
+    
+    // DEBUG: Print all routes in the response
+    DEBUG_PRINTLN("Routes in response:");
+    for (JsonPair kv : departuresObj) {
+        DEBUG_PRINTF("  Route %s: %d departures\n", kv.key().c_str(), kv.value().as<JsonArray>().size());
     }
     
     // Iterate through routes
@@ -186,10 +262,19 @@ bool TransportAPIClient::parseStopDepartures(const String& jsonResponse, const B
                     continue;
                 }
                 
+                // The TransportAPI only returns buses that stop at the queried stop
+                // The stop is verified at the API response level (doc["atcocode"])
+                // So we can trust that all departures are from the correct stop
+                String actualStopName = String(stop.name);
+                
                 // Extract departure info
                 String expectedTime = dep["expected_departure_time"].as<String>();
                 String aimedTime = dep["aimed_departure_time"].as<String>();
                 String bestEstimate = dep["best_departure_estimate"].as<String>();
+                
+                // Debug: show what API returned
+                DEBUG_PRINTF("  RAW: line=%s aimed=%s expected=%s estimate=%s\n",
+                            line.c_str(), aimedTime.c_str(), expectedTime.c_str(), bestEstimate.c_str());
                 
                 // Calculate minutes until departure
                 String displayTime;
@@ -223,13 +308,17 @@ bool TransportAPIClient::parseStopDepartures(const String& jsonResponse, const B
                 
                 // Build departure entry
                 departures[currentCount].busNumber = line;
-                departures[currentCount].stopName = String(stop.name);
+                departures[currentCount].stopName = actualStopName;
                 departures[currentCount].destination = direction;
                 departures[currentCount].departureTime = displayTime;
                 departures[currentCount].minutesUntilDeparture = minutesUntil;
                 departures[currentCount].walkingTimeMinutes = stop.walkingTimeMinutes;
                 departures[currentCount].isLive = isLive;
                 departures[currentCount].statusText = statusText;
+                
+                DEBUG_PRINTF("  ADDED: Bus %s from %s at %s (in %d min, walk %d)\n",
+                            line.c_str(), actualStopName.c_str(), displayTime.c_str(),
+                            minutesUntil, stop.walkingTimeMinutes);
                 
                 currentCount++;
             }
@@ -243,41 +332,26 @@ void TransportAPIClient::parseDepartureTime(const String& timeStr, const String&
                                              String& displayTime, int& minutesUntil) {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
-        displayTime = timeStr;
+        displayTime = timeStr.length() > 0 ? timeStr : "??:??";
         minutesUntil = 0;
         return;
     }
     
-    // Try to parse estimate minutes first
-    if (estimateStr.length() > 0) {
-        int estimate = estimateStr.toInt();
-        if (estimate > 0 || estimateStr == "0") {
-            minutesUntil = estimate;
-            
-            // Calculate display time from estimate
-            int depHour = timeinfo.tm_hour;
-            int depMin = timeinfo.tm_min + estimate;
-            while (depMin >= 60) {
-                depMin -= 60;
-                depHour++;
-            }
-            depHour %= 24;
-            
-            char buf[6];
-            snprintf(buf, sizeof(buf), "%02d:%02d", depHour, depMin);
-            displayTime = String(buf);
-            return;
-        }
+    // Determine which time string to use for display
+    // Priority: timeStr (aimed/expected), then estimateStr (which is also a time string)
+    String actualTimeStr = timeStr;
+    if (actualTimeStr.length() < 5 && estimateStr.length() >= 5) {
+        actualTimeStr = estimateStr;
     }
     
-    // Parse time string (HH:MM format)
-    if (timeStr.length() >= 5) {
-        int depHour = timeStr.substring(0, 2).toInt();
-        int depMin = timeStr.substring(3, 5).toInt();
+    // Use actual time string for display
+    if (actualTimeStr.length() >= 5) {
+        displayTime = actualTimeStr.substring(0, 5);
         
-        displayTime = timeStr.substring(0, 5);
+        // Calculate minutes until departure from the time
+        int depHour = actualTimeStr.substring(0, 2).toInt();
+        int depMin = actualTimeStr.substring(3, 5).toInt();
         
-        // Calculate minutes until
         int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
         int depMinutes = depHour * 60 + depMin;
         
@@ -287,11 +361,14 @@ void TransportAPIClient::parseDepartureTime(const String& timeStr, const String&
         }
         
         minutesUntil = depMinutes - nowMinutes;
-    } else {
-        displayTime = "--:--";
-        minutesUntil = 0;
+        return;
     }
+    
+    // No valid time string
+    displayTime = "??:??";
+    minutesUntil = 0;
 }
+
 
 bool TransportAPIClient::isValidDestination(const String& destination, Direction dir) {
     String lower = destination;

@@ -27,7 +27,6 @@
 #include "transport_api.h"
 #include "mqtt_ha.h"
 #include "ota_update.h"
-#include "weather.h"
 
 // ============================================================================
 // GLOBAL STATE
@@ -42,14 +41,13 @@ unsigned long lastDisplayRefresh = 0;
 unsigned long lastCountdownUpdate = 0;
 unsigned long lastFooterUpdate = 0;
 unsigned long lastDataFetch = 0;  // When we last got fresh data
-unsigned long lastWeatherUpdate = 0;
 
 // Battery state
 int batteryPercent = 100;
 float batteryVoltage = 4.2;
 
 // Bus data
-BusDeparture departures[5];
+BusDeparture departures[20];  // Buffer for collecting from all stops before filtering
 int departureCount = 0;
 
 // Connection state
@@ -129,24 +127,16 @@ void setup() {
         // Initial battery read
         readBattery();
         
-        // Fetch initial weather
-        DEBUG_PRINTLN("Fetching initial weather...");
-        weatherClient.fetchWeather();
-        lastWeatherUpdate = millis();
-        
         // Fetch initial bus data
         DEBUG_PRINTLN("Fetching initial bus data...");
         display.showLoading("Loading bus times...");
         if (transportApi.isActiveHours()) {
             fetchAndDisplayBuses();
         } else {
-            populatePlaceholderDepartures("Sleeping hours 22:00-06:00");
-            WeatherData w = weatherClient.getWeather();
+            populatePlaceholderDepartures("Sleeping 21:00-06:00");
             display.showBusTimetable(departures, departureCount,
                                      currentTimeStr, transportApi.getDirectionLabel(),
-                                     batteryPercent, wifiConnected, showingPlaceholderData,
-                                     w.valid ? w.temperature : 0,
-                                     w.valid ? w.condition : "");
+                                     batteryPercent, wifiConnected, showingPlaceholderData);
             unsigned long now = millis();
             lastCountdownUpdate = now;
             lastDisplayRefresh = now;
@@ -171,7 +161,7 @@ void loop() {
     bool activeHours = transportApi.isActiveHours();
     
     if (!activeHours && !sleepModeActive) {
-        populatePlaceholderDepartures("Sleeping hours 22:00-06:00");
+        populatePlaceholderDepartures("Sleeping 21:00-06:00");
         display.showBusTimetable(departures, departureCount,
                                   currentTimeStr, transportApi.getDirectionLabel(),
                                   batteryPercent, wifiConnected, showingPlaceholderData);
@@ -206,20 +196,6 @@ void loop() {
     if (now - lastBatteryRead >= BATTERY_READ_INTERVAL_MS) {
         readBattery();
         lastBatteryRead = now;
-    }
-    
-    // Fetch weather
-    if (wifiConnected && (now - lastWeatherUpdate >= WEATHER_REFRESH_MS)) {
-        DEBUG_PRINTLN("Fetching weather...");
-        weatherClient.fetchWeather();
-        lastWeatherUpdate = now;
-        // Refresh display to show new weather
-        WeatherData w = weatherClient.getWeather();
-        display.showBusTimetable(departures, departureCount,
-                                  currentTimeStr, transportApi.getDirectionLabel(),
-                                  batteryPercent, wifiConnected, showingPlaceholderData,
-                                  w.valid ? w.temperature : 0,
-                                  w.valid ? w.condition : "");
     }
     
     // Publish MQTT state every minute
@@ -259,28 +235,73 @@ void loop() {
 // ============================================================================
 
 void setupWiFi() {
+    // Disconnect any existing connection
+    WiFi.disconnect(true);
+    delay(100);
+    
+    // Set WiFi mode and power
     WiFi.mode(WIFI_STA);
+    // Try to set maximum power (may not be available on all ESP32 variants)
+    #ifdef WIFI_POWER_19_5dBm
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    #elif defined(WIFI_POWER_19dBm)
+        WiFi.setTxPower(WIFI_POWER_19dBm);
+    #endif
+    WiFi.setSleep(false);  // Disable power saving for more reliable connection
+    
+    DEBUG_PRINTF("Connecting to %s...\n", WIFI_SSID);
+    
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     
-    DEBUG_PRINTF("Connecting to %s", WIFI_SSID);
-    
     unsigned long startTime = millis();
+    int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && 
            (millis() - startTime) < WIFI_CONNECT_TIMEOUT_MS) {
         delay(WIFI_RETRY_DELAY_MS);
         DEBUG_PRINT(".");
+        attempts++;
+        
+        // Print status every 5 seconds for debugging
+        if (attempts % 10 == 0) {
+            wl_status_t status = WiFi.status();
+            DEBUG_PRINTF("\n[%lu ms] WiFi status: %d", millis() - startTime, status);
+            switch(status) {
+                case WL_IDLE_STATUS: DEBUG_PRINT(" (IDLE)"); break;
+                case WL_NO_SSID_AVAIL: DEBUG_PRINT(" (SSID not found)"); break;
+                case WL_SCAN_COMPLETED: DEBUG_PRINT(" (Scan done)"); break;
+                case WL_CONNECTED: DEBUG_PRINT(" (Connected!)"); break;
+                case WL_CONNECT_FAILED: DEBUG_PRINT(" (Connect failed)"); break;
+                case WL_CONNECTION_LOST: DEBUG_PRINT(" (Connection lost)"); break;
+                case WL_DISCONNECTED: DEBUG_PRINT(" (Disconnected)"); break;
+                default: DEBUG_PRINT(" (Unknown)"); break;
+            }
+            DEBUG_PRINTLN();
+        }
     }
     
     DEBUG_PRINTLN();
     
-    if (WiFi.status() == WL_CONNECTED) {
+    wl_status_t finalStatus = WiFi.status();
+    if (finalStatus == WL_CONNECTED) {
         wifiConnected = true;
         DEBUG_PRINTLN("WiFi connected!");
         DEBUG_PRINTF("IP Address: %s\n", WiFi.localIP().toString().c_str());
+        DEBUG_PRINTF("Subnet Mask: %s\n", WiFi.subnetMask().toString().c_str());
+        DEBUG_PRINTF("Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
         DEBUG_PRINTF("Signal strength: %d dBm\n", WiFi.RSSI());
     } else {
         wifiConnected = false;
-        DEBUG_PRINTLN("WiFi connection failed!");
+        DEBUG_PRINTF("WiFi connection failed! Status code: %d\n", finalStatus);
+        DEBUG_PRINTF("Connection attempt took %lu ms\n", millis() - startTime);
+        
+        // Additional diagnostics
+        if (finalStatus == WL_NO_SSID_AVAIL) {
+            DEBUG_PRINTLN("ERROR: SSID not found. Check that the network is in range and 2.4GHz.");
+        } else if (finalStatus == WL_CONNECT_FAILED) {
+            DEBUG_PRINTLN("ERROR: Connection failed. Check WiFi password.");
+        } else if (finalStatus == WL_DISCONNECTED) {
+            DEBUG_PRINTLN("ERROR: Disconnected. Network may have rejected connection.");
+        }
     }
 }
 
@@ -360,7 +381,7 @@ void readBattery() {
 void fetchAndDisplayBuses() {
     Direction currentDir = transportApi.getDirection();
     
-    bool success = transportApi.fetchDepartures(currentDir, departures, 5, departureCount);
+    bool success = transportApi.fetchDepartures(currentDir, departures, 20, departureCount);
     
     if (success && departureCount > 0) {
         showingPlaceholderData = false;
@@ -389,71 +410,20 @@ void fetchAndDisplayBuses() {
                     transportApi.getLastError().c_str());
     }
     
-    // Get weather data
-    WeatherData weather = weatherClient.getWeather();
-    float temp = weather.valid ? weather.temperature : 0;
-    String condition = weather.valid ? weather.condition : "";
-    
     // Update display
     display.showBusTimetable(departures, departureCount,
                               currentTimeStr, transportApi.getDirectionLabel(),
-                              batteryPercent, wifiConnected, showingPlaceholderData,
-                              temp, condition);
+                              batteryPercent, wifiConnected, showingPlaceholderData);
     unsigned long now = millis();
     lastCountdownUpdate = now;
     lastDisplayRefresh = now;
 }
 
 void populatePlaceholderDepartures(const String& reason) {
+    // No placeholder data - just show empty state
     showingPlaceholderData = true;
-    
-    struct PlaceholderEntry {
-        const char* busNumber;
-        const char* stopName;
-        const char* destination;
-        int minutesAhead;
-        int walkingMinutes;
-    };
-    
-    static const PlaceholderEntry cheltenhamSamples[] = {
-        {"94", "St John's Church", "Cheltenham Spa", 8, WALK_TIME_ST_JOHNS},
-        {"94", "Churchdown Library", "Cheltenham Spa", 22, WALK_TIME_LIBRARY},
-        {"97", "Hare & Hounds", "Cheltenham Spa", 37, WALK_TIME_HARE_HOUNDS}
-    };
-    
-    static const PlaceholderEntry churchdownSamples[] = {
-        {"94", "Promenade (Stop 3)", "Gloucester Transport Hub", 6, WALK_TIME_CHELTENHAM},
-        {"94", "Promenade (Stop 5)", "Churchdown", 18, WALK_TIME_CHELTENHAM},
-        {"97", "Promenade (Stop 3)", "Brockworth", 32, WALK_TIME_CHELTENHAM}
-    };
-    
-    Direction dir = transportApi.getDirection();
-    const PlaceholderEntry* set = (dir == TO_CHELTENHAM) ? cheltenhamSamples : churchdownSamples;
-    int setCount = (dir == TO_CHELTENHAM) ? (int)(sizeof(cheltenhamSamples) / sizeof(cheltenhamSamples[0]))
-                                          : (int)(sizeof(churchdownSamples) / sizeof(churchdownSamples[0]));
-    
-    int maxSlots = (int)(sizeof(departures) / sizeof(departures[0]));
-    departureCount = min(setCount, maxSlots);
-    
-    for (int i = 0; i < departureCount; i++) {
-        const PlaceholderEntry& tpl = set[i];
-        departures[i].busNumber = tpl.busNumber;
-        departures[i].stopName = tpl.stopName;
-        departures[i].destination = tpl.destination;
-        departures[i].minutesUntilDeparture = tpl.minutesAhead;
-        departures[i].walkingTimeMinutes = tpl.walkingMinutes;
-        departures[i].departureTime = formatFutureTime(tpl.minutesAhead);
-        departures[i].isLive = false;
-        
-        if (i == 0) {
-            departures[i].statusText = "Live data unavailable";
-            if (reason.length() > 0) {
-                departures[i].statusText += " (" + reason + ")";
-            }
-        } else {
-            departures[i].statusText = "Sample timetable";
-        }
-    }
+    departureCount = 0;
+    DEBUG_PRINTF("No live data available: %s\n", reason.c_str());
 }
 
 void handleDisplayTick(unsigned long now) {
@@ -478,12 +448,9 @@ void handleDisplayTick(unsigned long now) {
         }
     }
     
-    WeatherData w = weatherClient.getWeather();
     display.showBusTimetable(departures, departureCount,
                               currentTimeStr, transportApi.getDirectionLabel(),
-                              batteryPercent, wifiConnected, showingPlaceholderData,
-                              w.valid ? w.temperature : 0,
-                              w.valid ? w.condition : "");
+                              batteryPercent, wifiConnected, showingPlaceholderData);
     lastDisplayRefresh = now;
 }
 

@@ -82,6 +82,9 @@ private:
     
     // Check if route is in target routes
     bool isTargetRoute(const String& route);
+    
+    // Check if route actually stops at the given stop
+    bool isValidRouteForStop(const String& route, const char* stopAtcocode);
 };
 
 extern TransportAPIClient transportApi;

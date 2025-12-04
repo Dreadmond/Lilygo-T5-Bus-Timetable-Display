@@ -67,8 +67,7 @@ public:
     void showBusTimetable(BusDeparture departures[], int count, 
                           String currentTime, String direction,
                           int batteryPercent, bool wifiConnected,
-                          bool placeholderMode = false,
-                          float temperature = 0, String weatherCondition = "");
+                          bool placeholderMode = false);
     void showError(const String& message);
     void showLoading(const String& message);
     void showNoData(const String& message);
@@ -77,7 +76,7 @@ public:
     void updateTimeOnly(const String& currentTime);
     void updateCountdownsOnly(BusDeparture departures[], int count);
     void updateStatusBarOnly(int batteryPercent, bool wifiConnected);
-    void updateFooter(int secondsAgo, bool cached, float temperature = 0, String weatherCondition = "");  // Update footer with elapsed time and weather
+    void updateFooter(int secondsAgo, bool cached);  // Update footer with elapsed time
     
     // Low battery warning
     void showLowBattery(int percent);
