@@ -239,11 +239,22 @@ bool OTAUpdateManager::parseReleaseInfo(const String& jsonResponse) {
         return false;
     }
     
+    // Check if versions are the same - don't update to same version
+    if (latestVersion == String(FIRMWARE_VERSION)) {
+        DEBUG_PRINTF("Latest version (%s) matches current version. No update needed.\n", latestVersion.c_str());
+        updateAvailable = false;
+        return false;
+    }
+    
     updateAvailable = isNewerVersion(latestVersion, FIRMWARE_VERSION);
     
     DEBUG_PRINTF("Latest version: %s, Current: %s, Update available: %s\n",
                  latestVersion.c_str(), FIRMWARE_VERSION, 
                  updateAvailable ? "Yes" : "No");
+    
+    if (!updateAvailable) {
+        DEBUG_PRINTF("Latest version is not newer than current version. Skipping update.\n");
+    }
     
     return updateAvailable;
 }

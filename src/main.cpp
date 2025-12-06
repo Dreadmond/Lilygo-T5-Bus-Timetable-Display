@@ -142,16 +142,14 @@ void setup() {
         DEBUG_PRINTLN("Initializing OTA...");
         otaManager.init();
         
-        // Check for OTA updates on startup
-        DEBUG_PRINTLN("Checking for firmware updates...");
-        if (otaManager.checkForUpdate()) {
-            DEBUG_PRINTLN("Update available! Installing...");
-            display.showLoading("Installing update...");
-            otaManager.performUpdate(otaManager.getUpdateUrl());
-            // If we get here, update failed
-            display.showError("Update failed");
-            delay(3000);
-        }
+        // Check for OTA updates on startup (optional - can be enabled for immediate updates)
+        // Updates will also be checked hourly in the main loop
+        // DEBUG_PRINTLN("Checking for firmware updates on startup...");
+        // if (otaManager.checkForUpdate()) {
+        //     DEBUG_PRINTLN("Update available! Installing...");
+        //     display.showLoading("Installing update...");
+        //     otaManager.performUpdate(otaManager.getUpdateUrl());
+        // }
         
         // Initial battery read
         readBattery();
@@ -464,9 +462,14 @@ void readBattery() {
     // Convert to voltage (account for voltage divider)
     float voltage = (adcValue / 4095.0f) * BATTERY_ADC_REFERENCE * BATTERY_VOLTAGE_DIVIDER;
     
-    // Calculate percentage
-    float percent = ((voltage - BATTERY_VOLTAGE_EMPTY) / 
-                    (BATTERY_VOLTAGE_FULL - BATTERY_VOLTAGE_EMPTY)) * 100.0;
+    // Calculate percentage - ensure voltages >= FULL show as 100%
+    float percent;
+    if (voltage >= BATTERY_VOLTAGE_FULL) {
+        percent = 100.0;
+    } else {
+        percent = ((voltage - BATTERY_VOLTAGE_EMPTY) / 
+                   (BATTERY_VOLTAGE_FULL - BATTERY_VOLTAGE_EMPTY)) * 100.0;
+    }
     
     batteryVoltage = voltage;
     batteryPercent = constrain((int)percent, 0, 100);
