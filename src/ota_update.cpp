@@ -266,6 +266,7 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
     updating = true;
     updateProgress = 0;
     
+    // First, get content length with a HEAD request or small GET
     WiFiClientSecure client;
     client.setInsecure();
     
@@ -274,6 +275,7 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setTimeout(30000);
     
+    // Get content length first without downloading
     int httpCode = http.GET();
     
     if (httpCode != HTTP_CODE_OK) {
@@ -285,9 +287,10 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
     }
     
     int contentLength = http.getSize();
+    http.end();  // Close the connection before partition operations
+    
     if (contentLength <= 0) {
         DEBUG_PRINTLN("Invalid content length");
-        http.end();
         updating = false;
         if (completeCallback) completeCallback(false);
         return false;
@@ -295,11 +298,10 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
     
     DEBUG_PRINTF("Firmware size: %d bytes\n", contentLength);
     
-    // Get the next OTA partition (the one we're NOT currently running on)
+    // Get the next OTA partition BEFORE starting Update
     const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(NULL);
     if (updatePartition == NULL) {
         DEBUG_PRINTLN("ERROR: No OTA partition available for update");
-        http.end();
         updating = false;
         if (completeCallback) completeCallback(false);
         return false;
@@ -311,15 +313,28 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
     // Validate firmware size fits in partition
     if (contentLength > updatePartition->size) {
         DEBUG_PRINTF("ERROR: Firmware too large (%d > %d bytes)\n", contentLength, updatePartition->size);
-        http.end();
         updating = false;
         if (completeCallback) completeCallback(false);
         return false;
     }
     
-    // Begin update to the specific partition
+    // Begin update to the specific partition (must be done before HTTP stream)
     if (!Update.begin(contentLength, U_FLASH)) {  // U_FLASH for OTA app partition
         DEBUG_PRINTF("ERROR: Update.begin failed: %s\n", Update.errorString());
+        updating = false;
+        if (completeCallback) completeCallback(false);
+        return false;
+    }
+    
+    // Now reconnect for streaming download
+    http.begin(client, downloadUrl);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setTimeout(30000);
+    
+    httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        DEBUG_PRINTF("Stream download failed: %d\n", httpCode);
+        Update.abort();
         http.end();
         updating = false;
         if (completeCallback) completeCallback(false);
