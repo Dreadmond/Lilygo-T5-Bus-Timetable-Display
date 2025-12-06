@@ -137,6 +137,7 @@ void DisplayManager::init() {
 void DisplayManager::clear() {
     if (!initialized) return;
     epd_poweron(); epd_clear(); epd_poweroff_all();
+    sleep();  // Ensure display sleeps after clear
     memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
     partialRefreshCount = 0;
     lastFullRefresh = millis();
@@ -147,6 +148,7 @@ void DisplayManager::fullRefresh() {
     epd_poweron(); epd_clear();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display is fully powered off
     partialRefreshCount = 0;
     lastFullRefresh = millis();
 }
@@ -158,6 +160,7 @@ void DisplayManager::partialRefresh(ScreenRegion r) {
     epd_poweron();
     epd_draw_grayscale_image(a, frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
     partialRefreshCount++;
 }
 
@@ -166,6 +169,7 @@ void DisplayManager::fastRefresh() {
     epd_poweron();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
     partialRefreshCount++;
 }
 
@@ -306,6 +310,7 @@ void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
     epd_clear_area_cycles(fullScreen, 2, 40);
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
     DEBUG_PRINTLN("Display: Full refresh");
     
     lastTimeStr = timeLabel;
@@ -545,6 +550,7 @@ void DisplayManager::showError(const String& msg) {
     epd_poweron(); epd_clear();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
 }
 
 void DisplayManager::showLoading(const String& msg) {
@@ -569,6 +575,7 @@ void DisplayManager::showLoading(const String& msg) {
     epd_poweron();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
 }
 
 void DisplayManager::showNoData(const String& msg) {
@@ -580,6 +587,7 @@ void DisplayManager::showNoData(const String& msg) {
     epd_poweron(); epd_clear();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
 }
 
 void DisplayManager::showWiFiSetup(const String& ssid, const String& ip) {
@@ -640,6 +648,7 @@ void DisplayManager::showWiFiSetup(const String& ssid, const String& ip) {
     epd_clear_area_cycles(fullScreen, 2, 40);
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
 }
 
 void DisplayManager::showClock(const String& timeStr) {
@@ -717,6 +726,7 @@ void DisplayManager::showClock(const String& timeStr) {
     delay(50);
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
 }
 
 void DisplayManager::showLowBattery(int pct) {
@@ -730,6 +740,7 @@ void DisplayManager::showLowBattery(int pct) {
     epd_poweron(); epd_clear();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
 }
 
 void DisplayManager::showConnectionStatus(bool wifi, bool mqtt) {
@@ -745,6 +756,7 @@ void DisplayManager::showConnectionStatus(bool wifi, bool mqtt) {
     epd_poweron(); epd_clear();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
 }
 
 void DisplayManager::updateTimeOnly(const String&) {}
@@ -875,6 +887,15 @@ void DisplayManager::pushRegionToDisplay(ScreenRegion r, UpdateMode m) {
     if (m == UPDATE_MODE_FULL) epd_clear_area(a);
     epd_draw_grayscale_image(a, frameBuffer);
     epd_poweroff_all();
+    sleep();  // Ensure display sleeps after refresh
+}
+
+void DisplayManager::sleep() {
+    if (!initialized) return;
+    // Ensure display is fully powered off - safe to call multiple times
+    epd_poweroff_all();
+    // Small delay to ensure power-off completes
+    delay(10);
 }
 
 Rect_t DisplayManager::clampToScreen(Rect_t rect) const {

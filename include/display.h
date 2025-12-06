@@ -88,6 +88,9 @@ public:
     // Connection status
     void showConnectionStatus(bool wifi, bool mqtt);
     
+    // Power management
+    void sleep();  // Put display to sleep (power off) between refreshes
+    
     
     // Getters for regions (for selective updates)
     ScreenRegion getHeaderRegion() const;
