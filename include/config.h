@@ -11,7 +11,7 @@
 // ----------------------------------------------------------------------------
 // VERSION INFO
 // ----------------------------------------------------------------------------
-#define FIRMWARE_VERSION "1.2.1"
+#define FIRMWARE_VERSION "1.2.3"
 #define DEVICE_NAME "bus-timetable-eink"
 #define DEVICE_FRIENDLY_NAME "Bus Timetable Display"
 
@@ -87,14 +87,14 @@
 #define BUS_DATA_REFRESH_INTERVAL_MS 600000    // Refresh bus data every 10 minutes
 #define BUS_DATA_REFRESH_SLOW_MS 600000        // Slow refresh every 10 minutes
 #define ACTIVE_HOURS_START 6                    // 6 AM - screen wakes
-#define ACTIVE_HOURS_END 21                     // 9 PM - screen sleeps
+#define ACTIVE_HOURS_END 22                     // 9 PM - screen sleeps
 #define TRANSPORT_API_DAILY_LIMIT 300           // Max API calls allowed per day
 
 // ----------------------------------------------------------------------------
 // BATTERY MONITORING
 // ----------------------------------------------------------------------------
 #define BATTERY_PIN 14                          // ADC pin for battery voltage (ESP32-S3)
-#define BATTERY_VOLTAGE_FULL 4.2               // Full battery voltage
+#define BATTERY_VOLTAGE_FULL 4.0               // Full battery voltage
 #define BATTERY_VOLTAGE_EMPTY 3.3              // Empty battery voltage
 #define BATTERY_READ_INTERVAL_MS 60000         // Read battery every minute
 
@@ -108,6 +108,13 @@
 #define OTA_GITHUB_USER "Dreadmond"
 #define OTA_GITHUB_REPO "Lilygo-T5-Bus-Timetable-Display"
 #define OTA_CHECK_INTERVAL_MS 3600000          // Check for updates every hour
+
+// ----------------------------------------------------------------------------
+// WEATHER API CONFIGURATION (Optional - not currently used)
+// ----------------------------------------------------------------------------
+#define WEATHER_API_KEY ""
+#define WEATHER_LAT_STR ""
+#define WEATHER_LON_STR ""
 
 // ----------------------------------------------------------------------------
 // DEEP SLEEP CONFIGURATION

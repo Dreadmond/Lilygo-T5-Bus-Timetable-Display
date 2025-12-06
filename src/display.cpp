@@ -2,10 +2,15 @@
 #include "epd_driver.h"
 #include "esp_heap_caps.h"
 #include "firasans.h"
+#include "busstop_font.h"
+#include "busstop_small_font.h"
 #include <time.h>
 #include <vector>
 #include <cmath>
 #include "zlib/zlib.h"
+
+// Use BusStop font as the main display font
+#define DISPLAY_FONT BusStop
 
 DisplayManager display;
 
@@ -109,7 +114,12 @@ DisplayManager::DisplayManager() {
     lastBatteryPercent = -1;
     loadingLogActive = false;
     loadingLogCursorY = SCREEN_MARGIN + 40;
+    colorsInverted = false;
     for (int i = 0; i < CARD_MAX_COUNT; i++) lastLeaveIn[i] = -999;
+}
+
+void DisplayManager::setInvertedColors(bool inverted) {
+    colorsInverted = inverted;
 }
 
 void DisplayManager::init() {
@@ -176,11 +186,15 @@ void DisplayManager::resetLoadingLog() {
 void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
                                        String currentTime, String direction,
                                        int batteryPercent, bool wifiConnected,
-                                       bool placeholderMode) {
+                                       bool placeholderMode,
+                                       bool forceFullRefresh) {
     if (!initialized || !frameBuffer) return;
     resetLoadingLog();
     
-    memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
+    // Background color depends on inversion state
+    uint8_t bgColor = colorsInverted ? 0xFF : 0x33;  // Light or dark
+    uint8_t headerBg = colorsInverted ? 240 : 50;
+    memset(frameBuffer, bgColor, EPD_WIDTH * EPD_HEIGHT / 2);
     logLayoutTable();
     
     char dateBuf[32] = "--";
@@ -199,21 +213,57 @@ void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
     
     // ===== HERO HEADER =====
     const LayoutSlot& heroRect = layoutSlot(LAYOUT_HERO);
-    const LayoutSlot& heroTimeRect = layoutSlot(LAYOUT_HERO_TIME);
-    const LayoutSlot& heroDirectionRect = layoutSlot(LAYOUT_HERO_DIRECTION);
     const LayoutSlot& heroBatteryRect = layoutSlot(LAYOUT_HERO_BATTERY);
-    epd_fill_rect(heroRect.x, heroRect.y, heroRect.width, heroRect.height, 230, frameBuffer);
-    epd_draw_rect(heroRect.x, heroRect.y, heroRect.width, heroRect.height, 200, frameBuffer);
     
+    // Header background
+    epd_fill_rect(heroRect.x, heroRect.y, heroRect.width, heroRect.height, headerBg, frameBuffer);
+    
+    // Text properties depend on inversion
+    FontProperties textProps = {
+        .fg_color = colorsInverted ? (uint8_t)0 : (uint8_t)15,  // Black or white
+        .bg_color = colorsInverted ? (uint8_t)15 : (uint8_t)3,
+        .fallback_glyph = 0,
+        .flags = 0
+    };
+    
+    // Time on left
+    int32_t hx = heroRect.x + 20;
+    int32_t hy = heroRect.y + 42;
+    if (colorsInverted) {
+        writeln((GFXfont*)&BusStop, timeLabel.c_str(), &hx, &hy, frameBuffer);
+    } else {
+        write_mode((GFXfont*)&BusStop, timeLabel.c_str(), &hx, &hy, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
+    
+    // Direction centered
     String dirLine = direction.length() ? direction : "Departures";
-    drawScaledTextInRect(heroTimeRect.x, heroTimeRect.y, heroTimeRect.width, heroTimeRect.height,
-                         timeLabel, HERO_FONT_SCALE, TextAlignment::LEFT);
-    drawScaledTextInRect(heroDirectionRect.x, heroDirectionRect.y, heroDirectionRect.width, heroDirectionRect.height,
-                         dirLine, HERO_FONT_SCALE, TextAlignment::CENTER);
+    int dirWidth = getTextWidth(dirLine, &BusStop);
+    int32_t dx = heroRect.x + (heroRect.width - dirWidth) / 2;
+    int32_t dy = heroRect.y + 42;
+    if (colorsInverted) {
+        writeln((GFXfont*)&BusStop, dirLine.c_str(), &dx, &dy, frameBuffer);
+    } else {
+        write_mode((GFXfont*)&BusStop, dirLine.c_str(), &dx, &dy, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
     
-    int iconX = heroBatteryRect.x + heroBatteryRect.width - BATTERY_ICON_WIDTH;
-    int iconY = heroBatteryRect.y + (heroBatteryRect.height - BATTERY_ICON_HEIGHT) / 2;
-    drawBatteryIcon(iconX, iconY, batteryPercent);
+    // Battery as ASCII only: [|||||] or [|||  ]
+    int bars = (batteryPercent + 10) / 20;  // 0-5 bars
+    if (bars > 5) bars = 5;
+    if (bars < 0) bars = 0;
+    String batStr = "[";
+    for (int i = 0; i < 5; i++) {
+        batStr += (i < bars) ? "|" : " ";
+    }
+    batStr += "]";
+    
+    int batWidth = getTextWidth(batStr, &BusStop);
+    int32_t batX = heroBatteryRect.x + heroBatteryRect.width - batWidth - 10;
+    int32_t batY = heroRect.y + 42;
+    if (colorsInverted) {
+        writeln((GFXfont*)&BusStop, batStr.c_str(), &batX, &batY, frameBuffer);
+    } else {
+        write_mode((GFXfont*)&BusStop, batStr.c_str(), &batX, &batY, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
     
     // ===== BUS CARDS =====
     const LayoutSlot& cardsArea = layoutSlot(LAYOUT_CARD_STACK);
@@ -237,20 +287,29 @@ void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
     if (actualCount == 0) {
         int32_t x = cardLeft + 20;
         int32_t y = cardAreaTop + 80;
-        writeln((GFXfont*)&FiraSans, "No buses available", &x, &y, frameBuffer);
+        if (colorsInverted) {
+            writeln((GFXfont*)&BusStop, "Unable to obtain live bus information", &x, &y, frameBuffer);
+        } else {
+            FontProperties whiteText = {
+                .fg_color = 15,
+                .bg_color = 3,
+                .fallback_glyph = 0,
+                .flags = 0
+            };
+            write_mode((GFXfont*)&BusStop, "Unable to obtain live bus information", &x, &y, frameBuffer, BLACK_ON_WHITE, &whiteText);
+        }
     }
     
-    // Refresh display
+    // Always do full refresh
     epd_poweron();
-    epd_clear();
-    delay(100);
+    Rect_t fullScreen = {0, 0, EPD_WIDTH, EPD_HEIGHT};
+    epd_clear_area_cycles(fullScreen, 2, 40);
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
+    DEBUG_PRINTLN("Display: Full refresh");
     
     lastTimeStr = timeLabel;
     lastBatteryPercent = batteryPercent;
-    partialRefreshCount = 0;
-    lastFullRefresh = millis();
 }
 
 void DisplayManager::logLayoutTable() const {
@@ -274,63 +333,88 @@ void DisplayManager::drawBusCard(int cardIndex, const BusDeparture& departure, b
                                  int cardTop, int cardHeight, int cardLeft, int cardWidth) {
     if (!frameBuffer) return;
     
-    uint8_t bg = highlight ? 215 : 245;
+    // Card styling depends on inversion
+    uint8_t cardBg = colorsInverted ? 255 : 50;
+    uint8_t borderColor = colorsInverted ? 180 : 30;
+    uint8_t lineColor = colorsInverted ? 180 : 100;
     
-    epd_fill_rect(cardLeft, cardTop, cardWidth, cardHeight, bg, frameBuffer);
-    epd_draw_rect(cardLeft, cardTop, cardWidth, cardHeight, 160, frameBuffer);
-    if (highlight) {
-        epd_fill_rect(cardLeft + 6, cardTop + 12, 6, cardHeight - 24, 0, frameBuffer);
-    }
+    // Draw main card
+    epd_fill_rect(cardLeft, cardTop, cardWidth, cardHeight, cardBg, frameBuffer);
+    epd_draw_rect(cardLeft, cardTop, cardWidth, cardHeight, borderColor, frameBuffer);
     
-    int paddingTop = 24;
-    int paddingBottom = 20;
+    // Text properties depend on inversion
+    FontProperties textProps = {
+        .fg_color = colorsInverted ? (uint8_t)0 : (uint8_t)15,
+        .bg_color = colorsInverted ? (uint8_t)15 : (uint8_t)3,
+        .fallback_glyph = 0,
+        .flags = 0
+    };
+    
+    int paddingTop = 20;
+    int paddingBottom = 16;
     int innerTop = cardTop + paddingTop;
     int innerHeight = cardHeight - paddingTop - paddingBottom;
     if (innerHeight < 20) innerHeight = cardHeight - 10;
     
-    const int colSpacing = 10;
+    const int colSpacing = 12;
     const int cardRight = cardLeft + cardWidth;
-    const int leftAreaLeft = cardLeft + colSpacing;
-    const int leaveAreaWidth = LEAVE_COLUMN_WIDTH;
-    int leaveAreaLeft = cardRight - colSpacing - leaveAreaWidth - LEAVE_COLUMN_OFFSET;
-    int minLeaveAreaLeft = leftAreaLeft + (colSpacing * 2) + ARRIVAL_COLUMN_WIDTH;
-    if (leaveAreaLeft < minLeaveAreaLeft) leaveAreaLeft = minLeaveAreaLeft;
-    const int arrivalAreaWidth = ARRIVAL_COLUMN_WIDTH;
-    int desiredArrivalLeft = cardLeft + ((cardWidth * 2) / 3) - STOP_COLUMN_REDUCTION + NAME_BLOCK_EXTRA_WIDTH - ARRIVAL_COLUMN_OFFSET;
-    int maxArrivalLeft = leaveAreaLeft - colSpacing - arrivalAreaWidth;
-    int minArrivalLeft = leftAreaLeft + colSpacing + 100;
-    int arrivalAreaLeft = constrain(desiredArrivalLeft, minArrivalLeft, maxArrivalLeft);
+    const int leftAreaLeft = cardLeft + colSpacing + 15;
     
-    int leftAreaWidth = max(120, arrivalAreaLeft - leftAreaLeft - colSpacing);
-    
-    int busColWidth = min(120, leftAreaWidth / 3);
-    if (busColWidth < 80) busColWidth = 80;
-    int busColLeft = leftAreaLeft;
-    int infoColLeft = busColLeft + busColWidth + colSpacing;
-    int infoColWidth = max(40, (leftAreaLeft + leftAreaWidth) - infoColLeft);
-    
-    drawTextCenteredInRect(busColLeft, innerTop, busColWidth, innerHeight, departure.busNumber);
-    
-    String destination = departure.destination.length() ? departure.destination : departure.statusText;
-    char walk[32];
-    snprintf(walk, sizeof(walk), "%d min walk", departure.walkingTimeMinutes);
-    String statusLine = departure.statusText.length() ? departure.statusText : (departure.isLive ? "Live data" : "Scheduled");
-    if (placeholderMode && cardIndex == 0) {
-        statusLine = "Live data unavailable";
+    // Bus number
+    int busNumWidth = 90;
+    int32_t busNumX = leftAreaLeft + 10;
+    int32_t busNumY = innerTop + innerHeight / 2 + 15;
+    if (colorsInverted) {
+        writeln((GFXfont*)&BusStop, departure.busNumber.c_str(), &busNumX, &busNumY, frameBuffer);
+    } else {
+        write_mode((GFXfont*)&BusStop, departure.busNumber.c_str(), &busNumX, &busNumY, frameBuffer, BLACK_ON_WHITE, &textProps);
     }
-    String infoBlock = departure.stopName + "\n" + destination + "\n" + String(walk) + "\n" + statusLine;
-    drawWrappedTextBlock(infoColLeft, innerTop, infoColWidth, innerHeight, infoBlock, false);
+    
+    // Info section
+    int infoColLeft = leftAreaLeft + busNumWidth + colSpacing;
+    int rightSectionLeft = cardRight - 320;
+    
+    // Clean up stop name - remove "Cheltenham" prefix
+    String stopName = departure.stopName;
+    stopName.replace("Cheltenham ", "");
+    stopName.replace("Cheltenham, ", "");
+    
+    // Stop name
+    int32_t stopX = infoColLeft;
+    int32_t stopY = innerTop + innerHeight / 2 + 15;
+    if (colorsInverted) {
+        writeln((GFXfont*)&BusStop, stopName.c_str(), &stopX, &stopY, frameBuffer);
+    } else {
+        write_mode((GFXfont*)&BusStop, stopName.c_str(), &stopX, &stopY, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
+    
+    // Vertical separator line
+    epd_draw_line(rightSectionLeft - 20, cardTop + 15, rightSectionLeft - 20, cardTop + cardHeight - 15, lineColor, frameBuffer);
     
     // Calculate fresh leaveIn from actual departure time
     int leaveIn = calculateLeaveIn(departure);
-    String timeLine = departure.departureTime;
+    
     String leaveLine = (leaveIn <= 0)
-        ? "Leave now"
-        : "Leave in " + String(leaveIn) + (leaveIn == 1 ? " min" : " mins");
+        ? "Leave now!"
+        : "Leave in " + String(leaveIn) + " min";
     
-    drawScaledTextInRect(arrivalAreaLeft, innerTop, arrivalAreaWidth, innerHeight, timeLine, RIGHT_COLUMN_SCALE, TextAlignment::LEFT);
+    // Departure time (smaller font)
+    int32_t timeX = rightSectionLeft;
+    int32_t timeY = innerTop + 22;
+    if (colorsInverted) {
+        writeln((GFXfont*)&BusStopSmall, departure.departureTime.c_str(), &timeX, &timeY, frameBuffer);
+    } else {
+        write_mode((GFXfont*)&BusStopSmall, departure.departureTime.c_str(), &timeX, &timeY, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
     
-    drawScaledTextInRect(leaveAreaLeft, innerTop, leaveAreaWidth, innerHeight, leaveLine, RIGHT_COLUMN_SCALE, TextAlignment::LEFT);
+    // Leave in text below (smaller font)
+    int32_t leaveX = rightSectionLeft;
+    int32_t leaveY = innerTop + innerHeight / 2 + 22;
+    if (colorsInverted) {
+        writeln((GFXfont*)&BusStopSmall, leaveLine.c_str(), &leaveX, &leaveY, frameBuffer);
+    } else {
+        write_mode((GFXfont*)&BusStopSmall, leaveLine.c_str(), &leaveX, &leaveY, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
 }
 
 // Placeholder function removed - only showing real data
@@ -350,7 +434,7 @@ String DisplayManager::formatTimeOffset(int minutesAhead) const {
 }
 
 int DisplayManager::measureTextAdvance(const String& text) const {
-    const GFXfont* font = (GFXfont*)&FiraSans;
+    const GFXfont* font = (GFXfont*)&BusStop;
     int advance = 0;
     const char* raw = text.c_str();
     while (*raw) {
@@ -366,7 +450,7 @@ int DisplayManager::measureTextAdvance(const String& text) const {
 void DisplayManager::drawScaledTextInRect(int left, int top, int width, int height, const String& text, float scale, TextAlignment alignment) {
     if (!frameBuffer || text.length() == 0) return;
     const float clampedScale = constrain(scale, 0.1f, 1.0f);
-    const GFXfont* font = (GFXfont*)&FiraSans;
+    const GFXfont* font = (GFXfont*)&BusStop;
     int rawHeight = getTextHeight(font);
     int scaledHeight = max(1, (int)ceil(rawHeight * clampedScale));
     int baseline = top + ((height - scaledHeight) / 2) + scaledHeight;
@@ -383,7 +467,7 @@ void DisplayManager::drawScaledTextInRect(int left, int top, int width, int heig
 
 void DisplayManager::drawScaledGlyphRun(const String& text, int startX, int baselineY, float scale) {
     if (!frameBuffer) return;
-    const GFXfont* font = (GFXfont*)&FiraSans;
+    const GFXfont* font = (GFXfont*)&BusStop;
     std::vector<uint8_t> scratch;
     int cursorX = startX;
     const char* raw = text.c_str();
@@ -455,9 +539,9 @@ void DisplayManager::showError(const String& msg) {
     resetLoadingLog();
     memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
     int32_t x = 300, y = 270;
-    writeln((GFXfont*)&FiraSans, "Error", &x, &y, frameBuffer);
+    writeln((GFXfont*)&BusStop, "Error", &x, &y, frameBuffer);
     x = 200; y = 320;
-    writeln((GFXfont*)&FiraSans, msg.c_str(), &x, &y, frameBuffer);
+    writeln((GFXfont*)&BusStop, msg.c_str(), &x, &y, frameBuffer);
     epd_poweron(); epd_clear();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
@@ -465,7 +549,7 @@ void DisplayManager::showError(const String& msg) {
 
 void DisplayManager::showLoading(const String& msg) {
     if (!initialized || !frameBuffer) return;
-    const GFXfont* font = (GFXfont*)&FiraSans;
+    const GFXfont* font = (GFXfont*)&BusStop;
     int lineHeight = getTextHeight(font) + 8;
     if (!loadingLogActive || (loadingLogCursorY + lineHeight > EPD_HEIGHT - SCREEN_MARGIN)) {
     memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
@@ -492,8 +576,145 @@ void DisplayManager::showNoData(const String& msg) {
     resetLoadingLog();
     memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
     int32_t x = 350, y = 270;
-    writeln((GFXfont*)&FiraSans, "No Data", &x, &y, frameBuffer);
+    writeln((GFXfont*)&BusStop, "No Data", &x, &y, frameBuffer);
     epd_poweron(); epd_clear();
+    epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
+    epd_poweroff_all();
+}
+
+void DisplayManager::showWiFiSetup(const String& ssid, const String& ip) {
+    if (!initialized || !frameBuffer) return;
+    resetLoadingLog();
+    
+    // White background
+    memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
+    
+    const GFXfont* font = (GFXfont*)&BusStop;
+    int centerX = EPD_WIDTH / 2;
+    
+    // Title
+    String title = "WiFi Setup";
+    int titleWidth = getTextWidth(title, font);
+    int32_t x = centerX - titleWidth / 2;
+    int32_t y = 80;
+    writeln(font, title.c_str(), &x, &y, frameBuffer);
+    
+    // Decorative line
+    epd_draw_line(centerX - 150, y + 20, centerX + 150, y + 20, 180, frameBuffer);
+    
+    // Instructions
+    y = 180;
+    
+    String line1 = "1. Connect to WiFi network:";
+    int w1 = getTextWidth(line1, font);
+    x = centerX - w1 / 2;
+    writeln(font, line1.c_str(), &x, &y, frameBuffer);
+    
+    y += 50;
+    String networkName = "\"" + ssid + "\"";
+    int wn = getTextWidth(networkName, font);
+    x = centerX - wn / 2;
+    writeln(font, networkName.c_str(), &x, &y, frameBuffer);
+    
+    y += 70;
+    String line2 = "2. Open browser and go to:";
+    int w2 = getTextWidth(line2, font);
+    x = centerX - w2 / 2;
+    writeln(font, line2.c_str(), &x, &y, frameBuffer);
+    
+    y += 50;
+    String url = "http://" + ip;
+    int wu = getTextWidth(url, font);
+    x = centerX - wu / 2;
+    writeln(font, url.c_str(), &x, &y, frameBuffer);
+    
+    y += 70;
+    String line3 = "3. Enter your WiFi details";
+    int w3 = getTextWidth(line3, font);
+    x = centerX - w3 / 2;
+    writeln(font, line3.c_str(), &x, &y, frameBuffer);
+    
+    // Refresh display
+    epd_poweron();
+    Rect_t fullScreen = {0, 0, EPD_WIDTH, EPD_HEIGHT};
+    epd_clear_area_cycles(fullScreen, 2, 40);
+    epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
+    epd_poweroff_all();
+}
+
+void DisplayManager::showClock(const String& timeStr) {
+    if (!initialized || !frameBuffer) return;
+    resetLoadingLog();
+    
+    // Clear to white
+    memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
+    
+    // Get current date
+    char dateBuf[64] = "";
+    char dayBuf[32] = "";
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+        strftime(dayBuf, sizeof(dayBuf), "%A", &timeinfo);  // "Friday"
+        strftime(dateBuf, sizeof(dateBuf), "%d %B %Y", &timeinfo);  // "05 December 2024"
+    }
+    
+    // Draw a subtle decorative line above the clock
+    int lineY = EPD_HEIGHT / 2 - 100;
+    int lineWidth = 200;
+    int lineX = (EPD_WIDTH - lineWidth) / 2;
+    epd_draw_line(lineX, lineY, lineX + lineWidth, lineY, 180, frameBuffer);
+    
+    // Draw the time HUGE and centered using scaled text
+    // Scale factor 3.0 makes it approximately 150px tall
+    float clockScale = 3.5f;
+    String displayTime = timeStr.length() ? timeStr : "--:--";
+    
+    // Measure text width at scale
+    int baseWidth = measureTextAdvance(displayTime);
+    int scaledWidth = (int)(baseWidth * clockScale);
+    int clockX = (EPD_WIDTH - scaledWidth) / 2;
+    int clockY = EPD_HEIGHT / 2 + 30;  // Centered vertically, slightly down
+    
+    // Draw scaled clock digits
+    drawScaledGlyphRun(displayTime, clockX, clockY, clockScale);
+    
+    // Draw decorative line below the clock
+    int line2Y = EPD_HEIGHT / 2 + 80;
+    epd_draw_line(lineX, line2Y, lineX + lineWidth, line2Y, 180, frameBuffer);
+    
+    // Draw day of week above clock
+    if (strlen(dayBuf) > 0) {
+        int dayWidth = getTextWidth(String(dayBuf), &BusStop);
+        int32_t dayX = (EPD_WIDTH - dayWidth) / 2;
+        int32_t dayY = EPD_HEIGHT / 2 - 120;
+        writeln((GFXfont*)&BusStop, dayBuf, &dayX, &dayY, frameBuffer);
+    }
+    
+    // Draw date below clock
+    if (strlen(dateBuf) > 0) {
+        int dateWidth = getTextWidth(String(dateBuf), &BusStop);
+        int32_t dateX = (EPD_WIDTH - dateWidth) / 2;
+        int32_t dateY = EPD_HEIGHT / 2 + 130;
+        writeln((GFXfont*)&BusStop, dateBuf, &dateX, &dateY, frameBuffer);
+    }
+    
+    // Small "Sleep mode" text at bottom
+    const char* sleepText = "Display sleeping until 06:00";
+    int sleepWidth = getTextWidth(String(sleepText), &BusStop);
+    int32_t sleepX = (EPD_WIDTH - sleepWidth) / 2;
+    int32_t sleepY = EPD_HEIGHT - 40;
+    FontProperties grayText = {
+        .fg_color = 8,  // Medium gray
+        .bg_color = 15,
+        .fallback_glyph = 0,
+        .flags = 0
+    };
+    write_mode((GFXfont*)&BusStop, sleepText, &sleepX, &sleepY, frameBuffer, BLACK_ON_WHITE, &grayText);
+    
+    // Full refresh for clean display
+    epd_poweron();
+    epd_clear();
+    delay(50);
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
 }
@@ -505,7 +726,7 @@ void DisplayManager::showLowBattery(int pct) {
     char buf[32];
     snprintf(buf, sizeof(buf), "Low Battery: %d%%", pct);
     int32_t x = 300, y = 270;
-    writeln((GFXfont*)&FiraSans, buf, &x, &y, frameBuffer);
+    writeln((GFXfont*)&BusStop, buf, &x, &y, frameBuffer);
     epd_poweron(); epd_clear();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
@@ -516,11 +737,11 @@ void DisplayManager::showConnectionStatus(bool wifi, bool mqtt) {
     resetLoadingLog();
     memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
     int32_t x = 350, y = 250;
-    writeln((GFXfont*)&FiraSans, "Status", &x, &y, frameBuffer);
+    writeln((GFXfont*)&BusStop, "Status", &x, &y, frameBuffer);
     x = 300; y = 300;
-    writeln((GFXfont*)&FiraSans, wifi ? "WiFi: OK" : "WiFi: FAIL", &x, &y, frameBuffer);
+    writeln((GFXfont*)&BusStop, wifi ? "WiFi: OK" : "WiFi: FAIL", &x, &y, frameBuffer);
     x = 300; y = 340;
-    writeln((GFXfont*)&FiraSans, mqtt ? "MQTT: OK" : "MQTT: FAIL", &x, &y, frameBuffer);
+    writeln((GFXfont*)&BusStop, mqtt ? "MQTT: OK" : "MQTT: FAIL", &x, &y, frameBuffer);
     epd_poweron(); epd_clear();
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
@@ -578,7 +799,7 @@ int DisplayManager::getTextHeight(const GFXfont* f) {
 
 void DisplayManager::drawTextCenteredInRect(int left, int top, int width, int height, const String& text) {
     if (!frameBuffer || width <= 0 || height <= 0) return;
-    const GFXfont* font = (GFXfont*)&FiraSans;
+    const GFXfont* font = (GFXfont*)&BusStop;
     int textWidth = getTextWidth(text, font);
     int textHeight = getTextHeight(font);
     int32_t x = left + (width - textWidth) / 2;
@@ -589,7 +810,7 @@ void DisplayManager::drawTextCenteredInRect(int left, int top, int width, int he
 
 int DisplayManager::drawWrappedTextBlock(int left, int top, int width, int maxHeight, const String& text, bool center) {
     if (!frameBuffer || width <= 0 || maxHeight <= 0) return top;
-    const GFXfont* font = (GFXfont*)&FiraSans;
+    const GFXfont* font = (GFXfont*)&BusStop;
     int textHeight = getTextHeight(font);
     if (textHeight <= 0) textHeight = 24;
     int lineHeight = textHeight + 4;

@@ -2,6 +2,8 @@
 #include <ArduinoOTA.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 
 // ============================================================================
 // OTA UPDATE MANAGER IMPLEMENTATION
@@ -73,7 +75,7 @@ void OTAUpdateManager::init() {
         html += ".btn{background:#FFB81C;color:#1a1a1a;border:none;padding:15px 30px;border-radius:8px;font-size:1em;cursor:pointer;margin-top:20px;}";
         html += ".btn:hover{background:#ffc94d;}";
         html += "</style></head><body>";
-        html += "<h1>🚌 Bus Timetable</h1>";
+        html += "<h1>Bus Timetable</h1>";
         html += "<p style='color:#888;'>E-Ink Display</p>";
         html += "<div class='card'>";
         html += "<div class='info'>Version</div><div class='value'>v" + String(FIRMWARE_VERSION) + "</div>";
@@ -118,26 +120,46 @@ void OTAUpdateManager::init() {
         if (Update.hasError()) {
             otaWebServer.send(500, "text/html", "<html><body style='background:#1a1a1a;color:#fff;text-align:center;padding:50px;font-family:system-ui;'><h1>Update Failed!</h1><p><a href='/' style='color:#FFB81C;'>Go Back</a></p></body></html>");
         } else {
-            otaWebServer.send(200, "text/html", "<html><body style='background:#1a1a1a;color:#fff;text-align:center;padding:50px;font-family:system-ui;'><h1>Update Success!</h1><p>Rebooting...</p></body></html>");
-            delay(500);
+            otaWebServer.send(200, "text/html", "<html><body style='background:#1a1a1a;color:#fff;text-align:center;padding:50px;font-family:system-ui;'><h1>Update Success!</h1><p>Validating... Rebooting in 3 seconds...</p></body></html>");
+            delay(3000);
             ESP.restart();
         }
     }, []() {
         HTTPUpload& upload = otaWebServer.upload();
         if (upload.status == UPLOAD_FILE_START) {
             DEBUG_PRINTF("Update: %s\n", upload.filename.c_str());
-            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+            
+            // Get the next OTA partition
+            const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(NULL);
+            if (updatePartition == NULL) {
+                DEBUG_PRINTLN("ERROR: No OTA partition available");
+                Update.abort();
+                return;
+            }
+            
+            DEBUG_PRINTF("Updating partition: %s at 0x%x\n", updatePartition->label, updatePartition->address);
+            
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
                 Update.printError(Serial);
+                DEBUG_PRINTF("Update.begin failed: %s\n", Update.errorString());
             }
         } else if (upload.status == UPLOAD_FILE_WRITE) {
             if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
                 Update.printError(Serial);
+                DEBUG_PRINTLN("Write error during upload");
             }
         } else if (upload.status == UPLOAD_FILE_END) {
             if (Update.end(true)) {
                 DEBUG_PRINTF("Update Success: %u bytes\n", upload.totalSize);
+                
+                // Verify boot partition was set
+                const esp_partition_t* bootPartition = esp_ota_get_boot_partition();
+                if (bootPartition != NULL) {
+                    DEBUG_PRINTF("Boot partition set to: %s at 0x%x\n", bootPartition->label, bootPartition->address);
+                }
             } else {
                 Update.printError(Serial);
+                DEBUG_PRINTF("Update.end failed: %s\n", Update.errorString());
             }
         }
     });
@@ -262,8 +284,31 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
     
     DEBUG_PRINTF("Firmware size: %d bytes\n", contentLength);
     
-    if (!Update.begin(contentLength)) {
-        DEBUG_PRINTLN("Not enough space for update");
+    // Get the next OTA partition (the one we're NOT currently running on)
+    const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(NULL);
+    if (updatePartition == NULL) {
+        DEBUG_PRINTLN("ERROR: No OTA partition available for update");
+        http.end();
+        updating = false;
+        if (completeCallback) completeCallback(false);
+        return false;
+    }
+    
+    DEBUG_PRINTF("Updating partition: %s at 0x%x (size: %d bytes)\n", 
+                 updatePartition->label, updatePartition->address, updatePartition->size);
+    
+    // Validate firmware size fits in partition
+    if (contentLength > updatePartition->size) {
+        DEBUG_PRINTF("ERROR: Firmware too large (%d > %d bytes)\n", contentLength, updatePartition->size);
+        http.end();
+        updating = false;
+        if (completeCallback) completeCallback(false);
+        return false;
+    }
+    
+    // Begin update to the specific partition
+    if (!Update.begin(contentLength, U_FLASH)) {  // U_FLASH for OTA app partition
+        DEBUG_PRINTF("ERROR: Update.begin failed: %s\n", Update.errorString());
         http.end();
         updating = false;
         if (completeCallback) completeCallback(false);
@@ -283,6 +328,7 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
             
             if (writtenBytes != readBytes) {
                 DEBUG_PRINTLN("Write error");
+                Update.abort();
                 break;
             }
             
@@ -298,21 +344,54 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
     
     http.end();
     
-    if (Update.end()) {
-        if (Update.isFinished()) {
-            DEBUG_PRINTLN("Update successful! Restarting...");
-            updating = false;
-            if (completeCallback) completeCallback(true);
-            delay(1000);
-            ESP.restart();
-            return true;
-        }
+    // Verify all bytes were written
+    if (written != contentLength) {
+        DEBUG_PRINTF("ERROR: Incomplete write (%d of %d bytes)\n", written, contentLength);
+        Update.abort();
+        updating = false;
+        if (completeCallback) completeCallback(false);
+        return false;
     }
     
-    DEBUG_PRINTF("Update failed: %s\n", Update.errorString());
+    // Finalize the update (this validates and sets the boot partition)
+    if (!Update.end(true)) {  // true = set as boot partition after validation
+        DEBUG_PRINTF("ERROR: Update.end failed: %s\n", Update.errorString());
+        updating = false;
+        if (completeCallback) completeCallback(false);
+        return false;
+    }
+    
+    // Verify the update is finished and valid
+    if (!Update.isFinished()) {
+        DEBUG_PRINTLN("ERROR: Update not finished properly");
+        updating = false;
+        if (completeCallback) completeCallback(false);
+        return false;
+    }
+    
+    // Double-check the boot partition was set correctly
+    const esp_partition_t* bootPartition = esp_ota_get_boot_partition();
+    if (bootPartition == NULL || bootPartition != updatePartition) {
+        DEBUG_PRINTLN("ERROR: Boot partition not set correctly");
+        updating = false;
+        if (completeCallback) completeCallback(false);
+        return false;
+    }
+    
+    DEBUG_PRINTLN("Update successful! Validated and ready to boot.");
+    DEBUG_PRINTF("New boot partition: %s at 0x%x\n", bootPartition->label, bootPartition->address);
+    
     updating = false;
-    if (completeCallback) completeCallback(false);
-    return false;
+    if (completeCallback) completeCallback(true);
+    
+    // Give time for any pending writes to complete
+    delay(2000);
+    
+    DEBUG_PRINTLN("Restarting in 2 seconds...");
+    delay(2000);
+    
+    ESP.restart();
+    return true;
 }
 
 bool OTAUpdateManager::isUpdateAvailable() const {

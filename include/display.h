@@ -67,10 +67,14 @@ public:
     void showBusTimetable(BusDeparture departures[], int count, 
                           String currentTime, String direction,
                           int batteryPercent, bool wifiConnected,
-                          bool placeholderMode = false);
+                          bool placeholderMode = false,
+                          bool forceFullRefresh = false);
     void showError(const String& message);
     void showLoading(const String& message);
     void showNoData(const String& message);
+    void showClock(const String& timeStr);  // Full-screen clock for sleep mode
+    void showWiFiSetup(const String& ssid, const String& ip);  // WiFi setup instructions
+    void setInvertedColors(bool inverted);  // Toggle color inversion
     
     // Partial update functions (for real-time countdown)
     void updateTimeOnly(const String& currentTime);
@@ -104,6 +108,7 @@ private:
     int placeholderYOffset;
     bool loadingLogActive;
     int loadingLogCursorY;
+    bool colorsInverted;
     
     // Cached values for partial updates
     String lastTimeStr;

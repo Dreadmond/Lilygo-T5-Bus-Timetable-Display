@@ -222,6 +222,14 @@ void MQTTHomeAssistant::publishDiscoveryConfig() {
         "mdi:swap-horizontal"
     );
     
+    // Invert colors button
+    publishButtonDiscovery(
+        "Invert Colors",
+        "invert_colors",
+        "invert_colors",
+        "mdi:invert-colors"
+    );
+    
     DEBUG_PRINTLN("Discovery config published");
 }
 

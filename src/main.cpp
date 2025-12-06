@@ -55,6 +55,12 @@ unsigned long lastDataFetch = 0;  // When we last got fresh data
 int batteryPercent = 100;
 float batteryVoltage = 4.2;
 
+// Button for color inversion (GPIO0 = boot button, has external pull-up)
+#define BUTTON_PIN 0
+bool invertedColors = false;
+unsigned long lastButtonPress = 0;
+const unsigned long BUTTON_DEBOUNCE_MS = 500;
+
 // Bus data
 BusDeparture departures[20];  // Buffer for collecting from all stops before filtering
 int departureCount = 0;
@@ -99,6 +105,9 @@ void setup() {
     DEBUG_PRINTLN("  LilyGo T5 4.7\" Edition");
     DEBUG_PRINTF("  Version: %s\n", FIRMWARE_VERSION);
     DEBUG_PRINTLN("========================================\n");
+    
+    // Button disabled - causes false triggers
+    // pinMode(BUTTON_PIN, INPUT);
     
     // Initialize display first for visual feedback
     DEBUG_PRINTLN("Initializing display...");
@@ -153,10 +162,8 @@ void setup() {
         if (transportApi.isActiveHours()) {
             fetchAndDisplayBuses();
         } else {
-            populatePlaceholderDepartures("Sleeping 21:00-06:00");
-            display.showBusTimetable(departures, departureCount,
-                                     currentTimeStr, transportApi.getDirectionLabel(),
-                                     batteryPercent, wifiConnected, showingPlaceholderData);
+            // Sleep mode - show nice clock display
+            display.showClock(currentTimeStr);
             unsigned long now = millis();
             lastCountdownUpdate = now;
             lastDisplayRefresh = now;
@@ -192,7 +199,8 @@ void loop() {
         populatePlaceholderDepartures("Sleeping 21:00-06:00");
         display.showBusTimetable(departures, departureCount,
                                   currentTimeStr, transportApi.getDirectionLabel(),
-                                  batteryPercent, wifiConnected, showingPlaceholderData);
+                                  batteryPercent, wifiConnected, showingPlaceholderData,
+                                  true);  // Full refresh entering sleep
         lastCountdownUpdate = now;
         lastDisplayRefresh = now;
         sleepModeActive = true;
@@ -241,6 +249,8 @@ void loop() {
         lastOtaCheck = now;
     }
     
+    // Button disabled - use MQTT command "invert_colors" instead
+    
     // Update display between API refreshes
     handleDisplayTick(now);
     
@@ -285,7 +295,7 @@ bool tryWiFiConnect(const char* ssid, const char* password, int timeoutMs) {
 // Start WiFi configuration portal
 void startConfigPortal() {
     DEBUG_PRINTLN("Starting WiFi configuration portal...");
-    display.showLoading("WiFi Setup Mode\nConnect to: BusTimetable\nThen visit: 192.168.4.1");
+    display.showWiFiSetup("BusTimetable", "192.168.4.1");
     
     WiFi.mode(WIFI_AP);
     WiFi.softAP("BusTimetable", "");  // Open network
@@ -309,7 +319,7 @@ void startConfigPortal() {
         html += "input{width:100%;padding:12px;margin:8px 0;border:none;border-radius:8px;font-size:16px;box-sizing:border-box;}";
         html += ".btn{background:#FFB81C;color:#1a1a1a;border:none;padding:15px;border-radius:8px;font-size:16px;cursor:pointer;width:100%;}";
         html += "</style></head><body>";
-        html += "<h1>🚌 Bus Timetable</h1>";
+        html += "<h1>Bus Timetable</h1>";
         html += "<p>WiFi Configuration</p>";
         html += "<div class='card'>";
         html += "<form action='/save' method='POST'>";
@@ -500,20 +510,52 @@ void fetchAndDisplayBuses() {
                     transportApi.getLastError().c_str());
     }
     
-    // Update display
+    // Update display with full refresh (new data from API)
     display.showBusTimetable(departures, departureCount,
                               currentTimeStr, transportApi.getDirectionLabel(),
-                              batteryPercent, wifiConnected, showingPlaceholderData);
+                              batteryPercent, wifiConnected, showingPlaceholderData,
+                              true);  // Force full refresh for new data
     unsigned long now = millis();
     lastCountdownUpdate = now;
     lastDisplayRefresh = now;
 }
 
 void populatePlaceholderDepartures(const String& reason) {
-    // No placeholder data - just show empty state
+    // Fake placeholder data for UI testing
     showingPlaceholderData = true;
-    departureCount = 0;
-    DEBUG_PRINTF("No live data available: %s\n", reason.c_str());
+    DEBUG_PRINTF("Using placeholder data: %s\n", reason.c_str());
+    
+    // Fake bus 1
+    departures[0].busNumber = "X1";
+    departures[0].stopName = "Fake Stop Alpha";
+    departures[0].destination = "Testville";
+    departures[0].departureTime = "99:99";
+    departures[0].minutesUntilDeparture = 42;
+    departures[0].walkingTimeMinutes = 5;
+    departures[0].isLive = false;
+    departures[0].statusText = "DEMO DATA";
+    
+    // Fake bus 2
+    departures[1].busNumber = "Z9";
+    departures[1].stopName = "Sample Road";
+    departures[1].destination = "Nowhere";
+    departures[1].departureTime = "88:88";
+    departures[1].minutesUntilDeparture = 99;
+    departures[1].walkingTimeMinutes = 10;
+    departures[1].isLive = false;
+    departures[1].statusText = "DEMO DATA";
+    
+    // Fake bus 3
+    departures[2].busNumber = "00";
+    departures[2].stopName = "Placeholder Lane";
+    departures[2].destination = "Example City";
+    departures[2].departureTime = "77:77";
+    departures[2].minutesUntilDeparture = 123;
+    departures[2].walkingTimeMinutes = 15;
+    departures[2].isLive = false;
+    departures[2].statusText = "DEMO DATA";
+    
+    departureCount = 3;
 }
 
 void handleDisplayTick(unsigned long now) {
@@ -538,14 +580,18 @@ void handleDisplayTick(unsigned long now) {
         }
     }
     
+    // Use partial refresh for countdown updates (faster, less flashing)
     display.showBusTimetable(departures, departureCount,
                               currentTimeStr, transportApi.getDirectionLabel(),
-                              batteryPercent, wifiConnected, showingPlaceholderData);
+                              batteryPercent, wifiConnected, showingPlaceholderData,
+                              false);  // Partial refresh
     lastDisplayRefresh = now;
 }
 
 void decrementDepartureCountdowns(unsigned long minutesElapsed) {
     if (minutesElapsed == 0) return;
+    
+    bool needsRefetch = false;
     
     for (int i = 0; i < departureCount; i++) {
         int updated = departures[i].minutesUntilDeparture - (int)minutesElapsed;
@@ -553,6 +599,47 @@ void decrementDepartureCountdowns(unsigned long minutesElapsed) {
             updated = 0;
         }
         departures[i].minutesUntilDeparture = updated;
+        
+        // Check if this bus is now impossible to catch (leaveIn < 0)
+        int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
+        if (leaveIn < 0) {
+            // Mark for removal
+            needsRefetch = true;
+        }
+    }
+    
+    // If any buses became impossible to catch, filter them out
+    if (needsRefetch) {
+        int filtered = 0;
+        for (int i = 0; i < departureCount; i++) {
+            int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
+            if (leaveIn >= 0) {
+                // Keep this bus
+                if (filtered != i) {
+                    departures[filtered] = departures[i];
+                }
+                filtered++;
+            } else {
+                DEBUG_PRINTF("Removing bus %s - too late (leave in %d min, walk %d min)\n",
+                            departures[i].busNumber.c_str(),
+                            departures[i].minutesUntilDeparture,
+                            departures[i].walkingTimeMinutes);
+            }
+        }
+        
+        int removed = departureCount - filtered;
+        departureCount = filtered;
+        
+        if (removed > 0) {
+            DEBUG_PRINTF("Removed %d bus(es) that can't be caught. Remaining: %d\n", removed, departureCount);
+            
+            // If we have fewer than 3 buses, trigger a refetch to get more data
+            if (departureCount < 3 && wifiConnected && transportApi.isActiveHours()) {
+                DEBUG_PRINTLN("Triggering API refetch to get more departures...");
+                // Reset timer to trigger immediate refetch on next loop iteration
+                lastBusUpdate = millis() - BUS_DATA_REFRESH_INTERVAL_MS;
+            }
+        }
     }
 }
 
@@ -627,5 +714,33 @@ void handleMqttCommand(const String& command) {
             DEBUG_PRINTLN("Update available, performing update...");
             otaManager.performUpdate(otaManager.getUpdateUrl());
         }
+    }
+    else if (command == "invert_colors") {
+        // Force to light mode (for testing)
+        DEBUG_PRINTLN("Setting LIGHT mode");
+        invertedColors = true;
+        display.setInvertedColors(true);
+        display.showBusTimetable(departures, departureCount,
+                                  currentTimeStr, transportApi.getDirectionLabel(),
+                                  batteryPercent, wifiConnected, showingPlaceholderData,
+                                  true);
+        unsigned long now = millis();
+        lastDisplayRefresh = now;
+        lastBusUpdate = now;
+        lastCountdownUpdate = now;
+    }
+    else if (command == "dark_mode") {
+        // Force to dark mode
+        DEBUG_PRINTLN("Setting DARK mode");
+        invertedColors = false;
+        display.setInvertedColors(false);
+        display.showBusTimetable(departures, departureCount,
+                                  currentTimeStr, transportApi.getDirectionLabel(),
+                                  batteryPercent, wifiConnected, showingPlaceholderData,
+                                  true);
+        unsigned long now = millis();
+        lastDisplayRefresh = now;
+        lastBusUpdate = now;
+        lastCountdownUpdate = now;
     }
 }
