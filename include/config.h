@@ -11,7 +11,7 @@
 // ----------------------------------------------------------------------------
 // VERSION INFO
 // ----------------------------------------------------------------------------
-#define FIRMWARE_VERSION "1.2.4"
+#define FIRMWARE_VERSION "1.2.5"
 #define DEVICE_NAME "bus-timetable-eink"
 #define DEVICE_FRIENDLY_NAME "Bus Timetable Display"
 
