@@ -37,6 +37,11 @@ WebServer configServer(80);
 DNSServer dnsServer;
 bool configPortalActive = false;
 
+// API usage tracking
+Preferences apiPrefs;
+unsigned long lastApiResetDay = 0;  // Day of month when counter was last reset
+int apiCallsToday = 0;
+
 // ============================================================================
 // GLOBAL STATE
 // ============================================================================
@@ -50,6 +55,7 @@ unsigned long lastDisplayRefresh = 0;
 unsigned long lastCountdownUpdate = 0;
 unsigned long lastFooterUpdate = 0;
 unsigned long lastDataFetch = 0;  // When we last got fresh data
+unsigned long lastApiCountCheck = 0;  // Track API counter reset
 
 // Battery state
 int batteryPercent = 100;
@@ -89,6 +95,11 @@ void populatePlaceholderDepartures(const String& reason);
 void handleDisplayTick(unsigned long now);
 void decrementDepartureCountdowns(unsigned long minutesElapsed);
 String formatFutureTime(int minutesAhead);
+void resetApiCounterIfNewDay();
+void loadApiCounter();
+void saveApiCounter();
+unsigned long calculateOptimalRefreshInterval();
+void incrementApiCallCount(int calls);
 
 // ============================================================================
 // SETUP
@@ -150,6 +161,10 @@ void setup() {
         //     display.showLoading("Installing update...");
         //     otaManager.performUpdate(otaManager.getUpdateUrl());
         // }
+        
+        // Load and initialize API usage counter
+        loadApiCounter();
+        resetApiCounterIfNewDay();
         
         // Initial battery read
         readBattery();
@@ -216,8 +231,14 @@ void loop() {
     // Handle OTA
     otaManager.loop();
     
-    // Determine refresh interval based on active hours
-    unsigned long refreshInterval = BUS_DATA_REFRESH_INTERVAL_MS;
+    // Check and reset API counter at midnight
+    if (now - lastApiCountCheck >= 60000) {  // Check every minute
+        resetApiCounterIfNewDay();
+        lastApiCountCheck = now;
+    }
+    
+    // Calculate optimal refresh interval based on remaining API calls and time
+    unsigned long refreshInterval = calculateOptimalRefreshInterval();
     
     // Refresh bus data
     if (wifiConnected && activeHours && (now - lastBusUpdate >= refreshInterval)) {
@@ -486,6 +507,15 @@ void fetchAndDisplayBuses() {
     
     bool success = transportApi.fetchDepartures(currentDir, departures, 20, departureCount);
     
+    // Get the actual number of API calls made (optimized fetch stops early when it has enough)
+    int actualApiCalls = transportApi.getLastApiCallCount();
+    
+    // Increment API call counter with actual calls made
+    incrementApiCallCount(actualApiCalls);
+    
+    DEBUG_PRINTF("API calls: %d calls made (optimized from max %d stops)\n",
+                 actualApiCalls, (currentDir == TO_CHELTENHAM) ? 3 : 2);
+    
     if (success && departureCount > 0) {
         showingPlaceholderData = false;
         lastDataFetch = millis();  // Track when we got fresh data
@@ -644,6 +674,121 @@ void decrementDepartureCountdowns(unsigned long minutesElapsed) {
             }
         }
     }
+}
+
+// ============================================================================
+// API USAGE TRACKING AND RATE LIMITING
+// ============================================================================
+
+void loadApiCounter() {
+    apiPrefs.begin("api", true);  // Read-only
+    apiCallsToday = apiPrefs.getInt("calls", 0);
+    lastApiResetDay = apiPrefs.getULong("lastReset", 0);
+    apiPrefs.end();
+    DEBUG_PRINTF("Loaded API counter: %d calls today, last reset day: %lu\n", apiCallsToday, lastApiResetDay);
+}
+
+void saveApiCounter() {
+    apiPrefs.begin("api", false);
+    apiPrefs.putInt("calls", apiCallsToday);
+    apiPrefs.putULong("lastReset", lastApiResetDay);
+    apiPrefs.end();
+}
+
+void resetApiCounterIfNewDay() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        return;  // Can't check time, skip reset
+    }
+    
+    unsigned long currentDay = timeinfo.tm_mday;
+    
+    if (currentDay != lastApiResetDay) {
+        DEBUG_PRINTF("New day detected (day %lu). Resetting API counter from %d.\n", currentDay, apiCallsToday);
+        apiCallsToday = 0;
+        lastApiResetDay = currentDay;
+        saveApiCounter();
+    }
+}
+
+void incrementApiCallCount(int calls) {
+    apiCallsToday += calls;
+    saveApiCounter();
+    DEBUG_PRINTF("API calls today: %d/%d\n", apiCallsToday, TRANSPORT_API_DAILY_LIMIT);
+}
+
+unsigned long calculateOptimalRefreshInterval() {
+    // Reset counter if new day
+    resetApiCounterIfNewDay();
+    
+    // Get current time
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        // Can't get time, use default interval
+        return BUS_DATA_REFRESH_INTERVAL_MS;
+    }
+    
+    // Calculate remaining active hours in the day
+    int currentHour = timeinfo.tm_hour;
+    int remainingActiveHours = 0;
+    
+    if (currentHour < ACTIVE_HOURS_START) {
+        // Before active hours - full day remaining
+        remainingActiveHours = ACTIVE_HOURS_END - ACTIVE_HOURS_START;
+    } else if (currentHour >= ACTIVE_HOURS_END) {
+        // After active hours - no more today
+        remainingActiveHours = 0;
+    } else {
+        // During active hours
+        remainingActiveHours = ACTIVE_HOURS_END - currentHour;
+    }
+    
+    if (remainingActiveHours <= 0) {
+        // Not in active hours or no time remaining
+        return BUS_DATA_REFRESH_INTERVAL_MS;
+    }
+    
+    // Calculate remaining API calls
+    int remainingCalls = TRANSPORT_API_DAILY_LIMIT - apiCallsToday;
+    
+    if (remainingCalls <= 0) {
+        // Out of API calls for today - use very long interval
+        DEBUG_PRINTLN("WARNING: API limit reached for today! Using 1-hour interval.");
+        return 3600000;  // 1 hour
+    }
+    
+    // Estimate stops per refresh based on direction (optimized fetch may use fewer)
+    // We use average: typically 1-2 stops for Cheltenham, 1 for Churchdown
+    Direction currentDir = transportApi.getDirection();
+    int avgStopsPerRefresh = (currentDir == TO_CHELTENHAM) ? 2 : 1;  // Conservative average
+    
+    // Calculate how many refreshes we can do with remaining calls
+    int maxRefreshes = remainingCalls / avgStopsPerRefresh;
+    
+    if (maxRefreshes <= 0) {
+        // Can't even do one refresh
+        DEBUG_PRINTLN("WARNING: Not enough API calls for even one refresh!");
+        return 3600000;  // 1 hour
+    }
+    
+    // Calculate interval: spread refreshes evenly over remaining hours
+    // Convert hours to milliseconds
+    unsigned long remainingMs = remainingActiveHours * 3600000UL;
+    
+    // Calculate optimal interval: total time / number of refreshes
+    unsigned long optimalInterval = remainingMs / maxRefreshes;
+    
+    // Ensure minimum interval of 5 minutes (300000ms) and max of 30 minutes (1800000ms)
+    if (optimalInterval < 300000) {
+        optimalInterval = 300000;  // Minimum 5 minutes
+    } else if (optimalInterval > 1800000) {
+        optimalInterval = 1800000;  // Maximum 30 minutes
+    }
+    
+    DEBUG_PRINTF("API rate calc: %d calls used, %d remaining, %d hours left, %d avg stops/refresh -> %lu ms interval\n",
+                 apiCallsToday, remainingCalls, remainingActiveHours, avgStopsPerRefresh, optimalInterval);
+    
+    return optimalInterval;
 }
 
 String formatFutureTime(int minutesAhead) {

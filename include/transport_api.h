@@ -34,7 +34,12 @@ public:
     void init();
     
     // Fetch departures for current direction
+    // Returns true if successful, and fills count with number of departures found
+    // The actual number of API calls made can be retrieved with getLastApiCallCount()
     bool fetchDepartures(Direction direction, BusDeparture* departures, int maxDepartures, int& count);
+    
+    // Get the number of API calls made in the last fetchDepartures call
+    int getLastApiCallCount() const;
     
     // Switch direction
     void setDirection(Direction dir);
@@ -51,6 +56,7 @@ private:
     Direction currentDirection;
     String lastError;
     WiFiClientSecure secureClient;
+    int lastApiCallCount;  // Track API calls made in last fetch
     
     // Stop configurations
     static const BusStop cheltenhamStops[];

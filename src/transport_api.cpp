@@ -53,6 +53,7 @@ bool TransportAPIClient::isValidRouteForStop(const String& route, const char* st
 
 TransportAPIClient::TransportAPIClient() {
     currentDirection = TO_CHELTENHAM;
+    lastApiCallCount = 0;
 }
 
 void TransportAPIClient::init() {
@@ -111,20 +112,24 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
         stopCount = churchdownStopCount;
     }
     
-    DEBUG_PRINTF("Fetching departures for %d stops\n", stopCount);
+    DEBUG_PRINTF("Fetching departures for %d stops (optimized: will stop when enough data)\n", stopCount);
     
     HTTPClient http;
+    const int TARGET_DEPARTURES = 3;  // We only need 3 buses for display
+    lastApiCallCount = 0;  // Reset counter
     
-    // Fetch from ALL stops, then deduplicate and filter afterward
+    // Optimized: Fetch stops incrementally, starting with closest, stopping when we have enough
+    // Stops are already ordered by distance (closest first)
     for (int i = 0; i < stopCount; i++) {
         String url = buildUrl(stops[i].atcocode);
-        DEBUG_PRINTF("Fetching: %s\n", stops[i].name);
+        DEBUG_PRINTF("Fetching: %s (stop %d/%d)\n", stops[i].name, i + 1, stopCount);
         
         http.begin(secureClient, url);
         http.setTimeout(15000);
         http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
         
         int httpCode = http.GET();
+        lastApiCallCount++;  // Count this API call
         
         if (httpCode == HTTP_CODE_OK) {
             String response = http.getString();
@@ -135,12 +140,32 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
             DEBUG_PRINTLN(preview);
             DEBUG_PRINTLN("---");
             
+            int countBefore = count;
             if (!parseStopDepartures(response, stops[i], departures, count, maxDepartures)) {
                 DEBUG_PRINTF("Warning: Failed to parse departures for %s\n", stops[i].name);
+            }
+            
+            // Count how many valid departures we have (after filtering for catchable buses)
+            int validCount = 0;
+            for (int j = 0; j < count; j++) {
+                int leaveIn = departures[j].minutesUntilDeparture - departures[j].walkingTimeMinutes;
+                if (leaveIn >= 0) {
+                    validCount++;
+                }
+            }
+            
+            DEBUG_PRINTF("After %s: %d total departures, %d catchable\n", stops[i].name, count, validCount);
+            
+            // If we have enough catchable buses, stop fetching more stops
+            if (validCount >= TARGET_DEPARTURES) {
+                DEBUG_PRINTF("Got enough departures (%d >= %d), stopping early. Saved %d API calls!\n", 
+                            validCount, TARGET_DEPARTURES, stopCount - i - 1);
+                break;
             }
         } else {
             DEBUG_PRINTF("HTTP error for %s: %d\n", stops[i].name, httpCode);
             lastError = "HTTP " + String(httpCode);
+            // Continue to next stop even if this one failed
         }
         
         http.end();
@@ -193,6 +218,7 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
     count = unique;
     
     // Filter to only show buses we can catch (leave in >= 0)
+    // Note: This filtering was already partially done during incremental fetching
     int filtered = 0;
     for (int i = 0; i < count; i++) {
         int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
@@ -205,8 +231,12 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
     }
     count = min(filtered, 3); // Max 3 buses on display
     
-    DEBUG_PRINTF("Found %d valid departures\n", count);
+    DEBUG_PRINTF("Found %d valid departures (used %d API calls)\n", count, lastApiCallCount);
     return count > 0;
+}
+
+int TransportAPIClient::getLastApiCallCount() const {
+    return lastApiCallCount;
 }
 
 bool TransportAPIClient::parseStopDepartures(const String& jsonResponse, const BusStop& stop,
