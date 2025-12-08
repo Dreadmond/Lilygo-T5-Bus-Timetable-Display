@@ -88,7 +88,7 @@ void setupWiFi();
 void setupTime();
 void updateCurrentTime();
 void readBattery();
-void fetchAndDisplayBuses();
+void fetchAndDisplayBuses(bool forceFetchAll = false);
 void publishMqttState();
 void handleMqttCommand(const String& command);
 void handleDisplayTick(unsigned long now);
@@ -530,15 +530,18 @@ void readBattery() {
 // BUS DATA FETCHING
 // ============================================================================
 
-void fetchAndDisplayBuses() {
+void fetchAndDisplayBuses(bool forceFetchAll) {
     Direction currentDir = transportApi.getDirection();
     
     DEBUG_PRINTLN("============================================");
     DEBUG_PRINTLN("FETCHING BUS DATA");
     DEBUG_PRINTF("Direction: %s\n", currentDir == TO_CHELTENHAM ? "TO_CHELTENHAM" : "TO_CHURCHDOWN");
+    if (forceFetchAll) {
+        DEBUG_PRINTLN("MODE: Force fetch all stops (refetch after buses became uncatchable)");
+    }
     DEBUG_PRINTLN("============================================");
     
-    bool success = transportApi.fetchDepartures(currentDir, departures, 20, departureCount);
+    bool success = transportApi.fetchDepartures(currentDir, departures, 20, departureCount, forceFetchAll);
     
     // Get the actual number of API calls made (optimized fetch stops early when it has enough)
     int actualApiCalls = transportApi.getLastApiCallCount();
@@ -685,10 +688,13 @@ void decrementDepartureCountdowns(unsigned long minutesElapsed) {
             DEBUG_PRINTF("Removed %d bus(es) that can't be caught. Remaining: %d\n", removed, departureCount);
             
             // If we have fewer than 3 buses, trigger a refetch to get more data
+            // IMPORTANT: Use forceFetchAll=true to fetch from ALL stops, getting buses further ahead in time
             if (departureCount < 3 && wifiConnected && transportApi.isActiveHours()) {
-                DEBUG_PRINTLN("Triggering API refetch to get more departures...");
-                // Reset timer to trigger immediate refetch on next loop iteration
-                lastBusUpdate = millis() - BUS_DATA_REFRESH_INTERVAL_MS;
+                DEBUG_PRINTLN("⚠️ Fewer than 3 buses remaining. Triggering immediate refetch from ALL stops...");
+                DEBUG_PRINTLN("   This ensures we get buses further ahead in time, not just the same buses again.");
+                // Immediately refetch, forcing all stops to be checked
+                fetchAndDisplayBuses(true);  // forceFetchAll = true
+                // Don't reset lastBusUpdate here - the refetch just happened
             }
         }
     }

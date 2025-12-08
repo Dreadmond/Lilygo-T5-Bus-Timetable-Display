@@ -96,8 +96,9 @@ String TransportAPIClient::buildUrl(const char* atcocode) {
     return url;
 }
 
+// Add a flag to force fetching all stops (when refetching after buses become uncatchable)
 bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* departures, 
-                                          int maxDepartures, int& count) {
+                                          int maxDepartures, int& count, bool forceFetchAll) {
     count = 0;
     lastError = "";
     
@@ -112,7 +113,11 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
         stopCount = churchdownStopCount;
     }
     
-    DEBUG_PRINTF("Fetching departures for %d stops (optimized: will stop when enough data)\n", stopCount);
+    if (forceFetchAll) {
+        DEBUG_PRINTF("Fetching departures for ALL %d stops (force fetch - refetching after buses became uncatchable)\n", stopCount);
+    } else {
+        DEBUG_PRINTF("Fetching departures for %d stops (optimized: will stop when enough data)\n", stopCount);
+    }
     
     HTTPClient http;
     const int TARGET_DEPARTURES = 10;  // Fetch more to ensure we get at least 3 after filtering/deduplication
@@ -187,7 +192,9 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
         
             // After fetching each stop, check if we should stop early
             // We want to ensure we have enough unique catchable buses to guarantee 3 after deduplication
-            if (i < stopCount - 1 && count >= TARGET_DEPARTURES) {
+            // BUT: If forceFetchAll is true, we ALWAYS fetch all stops (for refetches after buses become uncatchable)
+            // This ensures we get buses further ahead in time, not just the same buses again
+            if (!forceFetchAll && i < stopCount - 1 && count >= TARGET_DEPARTURES) {
                 // Count likely unique catchable buses
                 int likelyUniqueCatchable = 0;
                 for (int j = 0; j < count; j++) {
@@ -218,13 +225,15 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
                 // Only stop early if we're confident we have 10+ unique catchable buses
                 // This ensures we'll have at least 3 after aggressive deduplication and filtering
                 if (likelyUniqueCatchable >= 10) {
-                    DEBUG_PRINTF("Got enough unique catchable buses (%d >= 6), stopping early. Saved %d API calls!\n", 
+                    DEBUG_PRINTF("Got enough unique catchable buses (%d >= 10), stopping early. Saved %d API calls!\n", 
                                 likelyUniqueCatchable, stopCount - i - 1);
                     fetchedAllStops = false;
                     break;
                 } else {
                     DEBUG_PRINTF("Only %d unique catchable buses so far, continuing to fetch more stops to ensure 3...\n", likelyUniqueCatchable);
                 }
+            } else if (forceFetchAll) {
+                DEBUG_PRINTF("Force fetch mode: continuing to fetch all stops to get buses further ahead in time\n");
             }
             
             if (i == stopCount - 1) {

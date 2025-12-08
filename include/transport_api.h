@@ -36,7 +36,8 @@ public:
     // Fetch departures for current direction
     // Returns true if successful, and fills count with number of departures found
     // The actual number of API calls made can be retrieved with getLastApiCallCount()
-    bool fetchDepartures(Direction direction, BusDeparture* departures, int maxDepartures, int& count);
+    // forceFetchAll: if true, always fetch from all stops (used when refetching after buses become uncatchable)
+    bool fetchDepartures(Direction direction, BusDeparture* departures, int maxDepartures, int& count, bool forceFetchAll = false);
     
     // Get the number of API calls made in the last fetchDepartures call
     int getLastApiCallCount() const;

@@ -361,9 +361,11 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
             written += writtenBytes;
             updateProgress = (written * 100) / contentLength;
             
-            // Update display every 5% progress
-            if (progressCallback && (updateProgress % 5 == 0 || updateProgress == 100)) {
+            // Update display every 1% progress for smoother progress bar
+            static int lastProgressPct = -1;
+            if (progressCallback && updateProgress != lastProgressPct) {
                 progressCallback(updateProgress);
+                lastProgressPct = updateProgress;
             }
         }
         delay(1);
