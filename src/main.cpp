@@ -779,7 +779,12 @@ unsigned long calculateOptimalRefreshInterval() {
     
     if (remainingCalls <= 0) {
         // Out of API calls for today - use very long interval
-        DEBUG_PRINTLN("WARNING: API limit reached for today! Using 1-hour interval.");
+        // Only print warning once per hour to avoid log spam
+        static int lastWarningHour = -1;
+        if (lastWarningHour != currentHour) {
+            DEBUG_PRINTLN("WARNING: API limit reached for today! Using 1-hour interval.");
+            lastWarningHour = currentHour;
+        }
         return 3600000;  // 1 hour
     }
     
