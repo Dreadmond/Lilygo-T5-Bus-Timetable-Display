@@ -14,6 +14,7 @@ MQTTHomeAssistant::MQTTHomeAssistant() : mqttClient(wifiClient) {
     lastReconnectAttempt = 0;
     commandCallback = nullptr;
     instance = this;
+    lastPublishedVersion = "";
 }
 
 void MQTTHomeAssistant::init() {
@@ -60,10 +61,14 @@ bool MQTTHomeAssistant::connect() {
         // Subscribe to command topic
         mqttClient.subscribe(MQTT_COMMAND_TOPIC);
         
-        // Publish discovery config if not already done
-        if (!discoveryPublished) {
+        // Always republish discovery if version changed (to update Home Assistant device registry)
+        // or if this is the first time publishing
+        if (!discoveryPublished || lastPublishedVersion != String(FIRMWARE_VERSION)) {
+            DEBUG_PRINTF("Publishing discovery config (version: %s, last: %s)\n", 
+                        FIRMWARE_VERSION, lastPublishedVersion.c_str());
             publishDiscoveryConfig();
             discoveryPublished = true;
+            lastPublishedVersion = String(FIRMWARE_VERSION);
         }
         
         return true;

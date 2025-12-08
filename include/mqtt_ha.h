@@ -44,6 +44,7 @@ private:
     bool discoveryPublished;
     unsigned long lastReconnectAttempt;
     void (*commandCallback)(const String& command);
+    String lastPublishedVersion;  // Track last published version to detect updates
     
     // Unique device ID based on MAC
     String getDeviceId();
