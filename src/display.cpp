@@ -584,8 +584,8 @@ void DisplayManager::showOtaProgress(const String& message, int progressPercent)
     if (!initialized || !frameBuffer) return;
     resetLoadingLog();
     
-    // Clear screen completely with white background
-    memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
+    static String lastMessage = "";
+    static int lastProgress = -1;
     
     const GFXfont* titleFont = (GFXfont*)&BusStop;
     const GFXfont* smallFont = (GFXfont*)&BusStopSmall;
@@ -593,38 +593,46 @@ void DisplayManager::showOtaProgress(const String& message, int progressPercent)
     int centerX = EPD_WIDTH / 2;
     int32_t x, y;
     
-    // Title: "Firmware Update"
-    String title = "Firmware Update";
-    int titleWidth = measureTextAdvance(title);
-    x = centerX - titleWidth / 2;
-    y = 100;
-    if (colorsInverted) {
-        writeln(titleFont, title.c_str(), &x, &y, frameBuffer);
-    } else {
-        FontProperties textProps = {
-            .fg_color = 0,
-            .bg_color = 15,
-            .fallback_glyph = 0,
-            .flags = 0
-        };
-        write_mode(titleFont, title.c_str(), &x, &y, frameBuffer, BLACK_ON_WHITE, &textProps);
-    }
+    // Determine if we need a full refresh (message changed or first call)
+    bool needsFullRefresh = (message != lastMessage || lastProgress == -1);
     
-    // Message text (e.g., "Installing v1.2.10...")
-    String displayMsg = message.length() > 0 ? message : "Installing update...";
-    int msgWidth = measureTextAdvance(displayMsg);
-    x = centerX - msgWidth / 2;
-    y += 40;
-    if (colorsInverted) {
-        writeln(smallFont, displayMsg.c_str(), &x, &y, frameBuffer);
-    } else {
-        FontProperties textProps = {
-            .fg_color = 0,
-            .bg_color = 15,
-            .fallback_glyph = 0,
-            .flags = 0
-        };
-        write_mode(smallFont, displayMsg.c_str(), &x, &y, frameBuffer, BLACK_ON_WHITE, &textProps);
+    if (needsFullRefresh) {
+        // Clear screen completely with white background
+        memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
+        
+        // Title: "Firmware Update"
+        String title = "Firmware Update";
+        int titleWidth = measureTextAdvance(title);
+        x = centerX - titleWidth / 2;
+        y = 100;
+        if (colorsInverted) {
+            writeln(titleFont, title.c_str(), &x, &y, frameBuffer);
+        } else {
+            FontProperties textProps = {
+                .fg_color = 0,
+                .bg_color = 15,
+                .fallback_glyph = 0,
+                .flags = 0
+            };
+            write_mode(titleFont, title.c_str(), &x, &y, frameBuffer, BLACK_ON_WHITE, &textProps);
+        }
+        
+        // Message text (e.g., "Installing v1.2.10...")
+        String displayMsg = message.length() > 0 ? message : "Installing update...";
+        int msgWidth = measureTextAdvance(displayMsg);
+        x = centerX - msgWidth / 2;
+        y += 40;
+        if (colorsInverted) {
+            writeln(smallFont, displayMsg.c_str(), &x, &y, frameBuffer);
+        } else {
+            FontProperties textProps = {
+                .fg_color = 0,
+                .bg_color = 15,
+                .fallback_glyph = 0,
+                .flags = 0
+            };
+            write_mode(smallFont, displayMsg.c_str(), &x, &y, frameBuffer, BLACK_ON_WHITE, &textProps);
+        }
     }
     
     // Progress bar dimensions
@@ -637,6 +645,13 @@ void DisplayManager::showOtaProgress(const String& message, int progressPercent)
     // Clamp progress to 0-100
     int progress = constrain(progressPercent, 0, 100);
     int filledWidth = (barWidth * progress) / 100;
+    
+    // Clear previous progress bar area (white background) if progress changed
+    if (progress != lastProgress) {
+        // Clear the entire progress bar area (bar + text below)
+        drawFilledRect(barX, barY, barWidth, barHeight, 15);  // White background
+        drawFilledRect(barX, barY + barHeight + 20, 200, 40, 15);  // Clear percentage text area
+    }
     
     // Draw progress bar border (rectangle outline) - black border
     // Top and bottom borders
@@ -680,12 +695,28 @@ void DisplayManager::showOtaProgress(const String& message, int progressPercent)
     }
     
     // Refresh display
-    epd_poweron();
-    Rect_t fullScreen = {0, 0, EPD_WIDTH, EPD_HEIGHT};
-    epd_clear_area_cycles(fullScreen, 2, 40);
-    epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
-    epd_poweroff_all();
-    sleep();
+    if (needsFullRefresh) {
+        // Full refresh for initial setup or message change
+        epd_poweron();
+        Rect_t fullScreen = {0, 0, EPD_WIDTH, EPD_HEIGHT};
+        epd_clear_area_cycles(fullScreen, 2, 40);
+        epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
+        epd_poweroff_all();
+        sleep();
+        resetFullRefreshTimer();
+    } else {
+        // Partial refresh for progress updates (much faster!)
+        ScreenRegion progressRegion = {
+            .x = barX - 10,  // Add some margin
+            .y = barY - 10,
+            .width = barWidth + 20,
+            .height = barHeight + 80  // Include percentage text below
+        };
+        partialRefresh(progressRegion);
+    }
+    
+    lastMessage = message;
+    lastProgress = progress;
 }
 
 void DisplayManager::showNoData(const String& msg) {
