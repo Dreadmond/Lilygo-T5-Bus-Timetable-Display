@@ -149,18 +149,39 @@ void setup() {
         mqtt.setCommandCallback(handleMqttCommand);
         mqtt.connect();
         
-        // Initialize OTA
+        // Initialize OTA with display callbacks
         DEBUG_PRINTLN("Initializing OTA...");
         otaManager.init();
         
-        // Check for OTA updates on startup (optional - can be enabled for immediate updates)
-        // Updates will also be checked hourly in the main loop
-        // DEBUG_PRINTLN("Checking for firmware updates on startup...");
-        // if (otaManager.checkForUpdate()) {
-        //     DEBUG_PRINTLN("Update available! Installing...");
-        //     display.showLoading("Installing update...");
-        //     otaManager.performUpdate(otaManager.getUpdateUrl());
-        // }
+        // Set up OTA progress callbacks to show on display
+        otaManager.setProgressCallback([](int progress) {
+            String msg = "Updating: " + String(progress) + "%";
+            display.showLoading(msg);
+        });
+        
+        otaManager.setCompleteCallback([](bool success) {
+            if (success) {
+                display.showLoading("Update complete! Rebooting...");
+            } else {
+                display.showError("Update failed");
+            }
+        });
+        
+        // Check for OTA updates on startup
+        DEBUG_PRINTLN("Checking for firmware updates on startup...");
+        display.showLoading("Checking for updates...");
+        delay(1000);  // Show checking message briefly
+        if (otaManager.checkForUpdate()) {
+            String latestVersion = otaManager.getLatestVersion();
+            DEBUG_PRINTF("Update available! Current: %s, Latest: %s\n", FIRMWARE_VERSION, latestVersion.c_str());
+            display.showLoading("Installing v" + latestVersion + "...");
+            delay(2000);  // Show message briefly
+            otaManager.performUpdate(otaManager.getUpdateUrl());
+            // performUpdate will reboot, so we won't reach here
+        } else {
+            DEBUG_PRINTLN("No update available or already up to date");
+            // Loading message will be cleared by normal display operations
+        }
         
         // Load and initialize API usage counter
         loadApiCounter();
@@ -261,9 +282,19 @@ void loop() {
     
     // Check for OTA updates hourly
     if (wifiConnected && (now - lastOtaCheck >= OTA_CHECK_INTERVAL_MS)) {
+        DEBUG_PRINTLN("Checking for OTA updates (hourly check)...");
+        display.showLoading("Checking for updates...");
+        delay(1000);  // Show checking message briefly
         if (otaManager.checkForUpdate()) {
-            DEBUG_PRINTLN("Update available! Performing update...");
+            String latestVersion = otaManager.getLatestVersion();
+            DEBUG_PRINTF("Update available! Current: %s, Latest: %s\n", FIRMWARE_VERSION, latestVersion.c_str());
+            display.showLoading("Installing v" + latestVersion + "...");
+            delay(2000);  // Show message briefly
             otaManager.performUpdate(otaManager.getUpdateUrl());
+            // performUpdate will reboot, so we won't reach here
+        } else {
+            DEBUG_PRINTLN("No update available or already up to date");
+            // Show briefly then continue - display will update with normal content
         }
         lastOtaCheck = now;
     }
@@ -536,17 +567,30 @@ void fetchAndDisplayBuses() {
             DEBUG_PRINTF("Only got %d buses, but this may be all available. Displaying what we have.\n", departureCount);
         }
     } else {
+        // Handle failure case - determine reason
         String reason = transportApi.getLastError();
         if (!wifiConnected) {
             reason = "No WiFi";
         } else if (!success && reason.length() == 0) {
             reason = "API error";
-        } else if (departureCount == 0 && reason.length() == 0) {
-            reason = "No departures";
+        } else if (departureCount == 0) {
+            // This can happen if API returned data but all buses were filtered out as uncatchable
+            if (reason.length() == 0) {
+                reason = "No catchable buses";
+            }
+            DEBUG_PRINTLN("WARNING: fetchDepartures returned success but no buses available (all filtered out?)");
         }
+        
         populatePlaceholderDepartures(reason);
-        DEBUG_PRINTF("Failed to fetch departures: %s\n", 
-                    transportApi.getLastError().c_str());
+        DEBUG_PRINTF("Failed to fetch departures: %s (success=%d, count=%d)\n", 
+                    reason.c_str(), success, departureCount);
+    }
+    
+    // Safety check: ensure departureCount is never 0 when displaying
+    // This prevents the "Unable to obtain" error from showing
+    if (departureCount == 0) {
+        DEBUG_PRINTLN("ERROR: departureCount is 0! Populating placeholder data as fallback.");
+        populatePlaceholderDepartures("No data available");
     }
     
     // Update display with full refresh (new data from API)

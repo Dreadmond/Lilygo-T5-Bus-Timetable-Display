@@ -161,7 +161,16 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
             DEBUG_PRINTLN("---");
             
             if (!parseStopDepartures(response, stops[i], departures, count, maxDepartures)) {
-                DEBUG_PRINTF("Warning: Failed to parse departures for %s\n", stops[i].name);
+                DEBUG_PRINTF("Warning: Failed to parse departures for %s (may be no buses running)\n", stops[i].name);
+            }
+            
+            // Check if we got any departures from this stop
+            // (This helps diagnose if API returned data but no matching routes)
+            if (count == 0 && i == 0) {
+                DEBUG_PRINTLN("WARNING: First stop returned no departures. This may indicate:");
+                DEBUG_PRINTLN("  - No buses running on target routes (94-98)");
+                DEBUG_PRINTLN("  - Wrong direction filter");
+                DEBUG_PRINTLN("  - API response format issue");
             }
         } else {
             DEBUG_PRINTF("HTTP error for %s after %d retries: %d\n", stops[i].name, retries, httpCode);
@@ -283,6 +292,21 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
     
     DEBUG_PRINTF("Found %d valid departures after filtering (used %d API calls, fetched %s stops)\n", 
                  count, lastApiCallCount, fetchedAllStops ? "all" : "some");
+    
+    // Log why buses were filtered out if we have no results
+    if (count == 0 && unique > 0) {
+        DEBUG_PRINTLN("WARNING: All buses filtered out as uncatchable. Details:");
+        // Find a few examples to log
+        for (int i = 0; i < min(unique, 5); i++) {
+            int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
+            DEBUG_PRINTF("  Bus %s from %s: departs in %d min, walk %d min, leave in %d min (TOO LATE)\n",
+                        departures[i].busNumber.c_str(),
+                        departures[i].stopName.c_str(),
+                        departures[i].minutesUntilDeparture,
+                        departures[i].walkingTimeMinutes,
+                        leaveIn);
+        }
+    }
     
     // Consider it successful if we have at least 1 bus (0 buses will show error message)
     return count > 0;
