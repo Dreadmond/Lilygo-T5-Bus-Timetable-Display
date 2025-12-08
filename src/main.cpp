@@ -166,11 +166,9 @@ void setup() {
             }
         });
         
-        // Check for OTA updates on startup
+        // Check for OTA updates on startup (silently, don't show screen)
         DEBUG_PRINTLN("Checking for firmware updates on startup...");
-        display.showOtaProgress("Checking for updates...", 0);
-        delay(1000);  // Show checking message briefly
-        if (otaManager.checkForUpdate()) {
+        if (WiFi.status() == WL_CONNECTED && otaManager.checkForUpdate()) {
             String latestVersion = otaManager.getLatestVersion();
             DEBUG_PRINTF("Update available! Current: %s, Latest: %s\n", FIRMWARE_VERSION, latestVersion.c_str());
             display.showOtaProgress("Installing v" + latestVersion + "...", 0);
@@ -179,7 +177,7 @@ void setup() {
             // performUpdate will reboot, so we won't reach here
         } else {
             DEBUG_PRINTLN("No update available or already up to date");
-            // Loading message will be cleared by normal display operations
+            // Continue with normal startup - no OTA screen shown
         }
         
         // Load and initialize API usage counter
@@ -277,21 +275,25 @@ void loop() {
         lastMqttPublish = now;
     }
     
-    // Check for OTA updates hourly
+    // Check for OTA updates hourly (silently, only show screen when actually updating)
     if (wifiConnected && (now - lastOtaCheck >= OTA_CHECK_INTERVAL_MS)) {
         DEBUG_PRINTLN("Checking for OTA updates (hourly check)...");
-        display.showOtaProgress("Checking for updates...", 0);
-        delay(1000);  // Show checking message briefly
-        if (otaManager.checkForUpdate()) {
-            String latestVersion = otaManager.getLatestVersion();
-            DEBUG_PRINTF("Update available! Current: %s, Latest: %s\n", FIRMWARE_VERSION, latestVersion.c_str());
-            display.showOtaProgress("Installing v" + latestVersion + "...", 0);
-            delay(1000);  // Show message briefly before starting
-            otaManager.performUpdate(otaManager.getUpdateUrl());
-            // performUpdate will reboot, so we won't reach here
+        // Verify WiFi is still connected before attempting check
+        if (WiFi.status() == WL_CONNECTED) {
+            if (otaManager.checkForUpdate()) {
+                String latestVersion = otaManager.getLatestVersion();
+                DEBUG_PRINTF("Update available! Current: %s, Latest: %s\n", FIRMWARE_VERSION, latestVersion.c_str());
+                display.showOtaProgress("Installing v" + latestVersion + "...", 0);
+                delay(1000);  // Show message briefly before starting
+                otaManager.performUpdate(otaManager.getUpdateUrl());
+                // performUpdate will reboot, so we won't reach here
+            } else {
+                DEBUG_PRINTLN("No update available or already up to date");
+                // Continue normally - no OTA screen shown for checks
+            }
         } else {
-            DEBUG_PRINTLN("No update available or already up to date");
-            // Show briefly then continue - display will update with normal content
+            DEBUG_PRINTLN("WiFi disconnected, skipping OTA check");
+            wifiConnected = false;  // Update connection state
         }
         lastOtaCheck = now;
     }
@@ -896,10 +898,20 @@ void handleMqttCommand(const String& command) {
         ESP.restart();
     }
     else if (command == "check_update") {
-        DEBUG_PRINTLN("Update check requested");
-        if (otaManager.checkForUpdate()) {
-            DEBUG_PRINTLN("Update available, performing update...");
-            otaManager.performUpdate(otaManager.getUpdateUrl());
+        DEBUG_PRINTLN("Update check requested via MQTT");
+        // Check WiFi first
+        if (WiFi.status() == WL_CONNECTED) {
+            if (otaManager.checkForUpdate()) {
+                DEBUG_PRINTLN("Update available, performing update...");
+                String latestVersion = otaManager.getLatestVersion();
+                display.showOtaProgress("Installing v" + latestVersion + "...", 0);
+                delay(1000);
+                otaManager.performUpdate(otaManager.getUpdateUrl());
+            } else {
+                DEBUG_PRINTLN("No update available");
+            }
+        } else {
+            DEBUG_PRINTLN("WiFi not connected, cannot check for updates");
         }
     }
     else if (command == "invert_colors") {

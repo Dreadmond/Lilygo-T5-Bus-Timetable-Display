@@ -177,6 +177,12 @@ void OTAUpdateManager::loop() {
 }
 
 bool OTAUpdateManager::checkForUpdate() {
+    // Check WiFi connection before attempting update check
+    if (WiFi.status() != WL_CONNECTED) {
+        DEBUG_PRINTLN("WiFi not connected, cannot check for updates");
+        return false;
+    }
+    
     DEBUG_PRINTLN("Checking for updates on GitHub...");
     
     WiFiClientSecure client;
@@ -261,6 +267,13 @@ bool OTAUpdateManager::parseReleaseInfo(const String& jsonResponse) {
 
 bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
     if (updating) return false;
+    
+    // Check WiFi connection before attempting update
+    if (WiFi.status() != WL_CONNECTED) {
+        DEBUG_PRINTLN("WiFi not connected, cannot perform update");
+        if (completeCallback) completeCallback(false);
+        return false;
+    }
     
     DEBUG_PRINTLN("Starting firmware update...");
     updating = true;
