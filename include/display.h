@@ -71,6 +71,7 @@ public:
                           bool forceFullRefresh = false);
     void showError(const String& message);
     void showLoading(const String& message);
+    void showOtaProgress(const String& message, int progressPercent);  // OTA update with progress bar
     void showNoData(const String& message);
     void showClock(const String& timeStr);  // Full-screen clock for sleep mode
     void showWiFiSetup(const String& ssid, const String& ip);  // WiFi setup instructions

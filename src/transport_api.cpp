@@ -115,7 +115,7 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
     DEBUG_PRINTF("Fetching departures for %d stops (optimized: will stop when enough data)\n", stopCount);
     
     HTTPClient http;
-    const int TARGET_DEPARTURES = 5;  // Fetch extra to account for deduplication (want 3 final)
+    const int TARGET_DEPARTURES = 10;  // Fetch more to ensure we get at least 3 after filtering/deduplication
     lastApiCallCount = 0;  // Reset counter
     
     // Optimized: Fetch stops incrementally, starting with closest
@@ -215,9 +215,9 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
                     }
                 }
                 
-                // Only stop early if we're confident we have 6+ unique catchable buses
-                // This ensures we'll have at least 3 after deduplication (which can be aggressive)
-                if (likelyUniqueCatchable >= 6) {
+                // Only stop early if we're confident we have 10+ unique catchable buses
+                // This ensures we'll have at least 3 after aggressive deduplication and filtering
+                if (likelyUniqueCatchable >= 10) {
                     DEBUG_PRINTF("Got enough unique catchable buses (%d >= 6), stopping early. Saved %d API calls!\n", 
                                 likelyUniqueCatchable, stopCount - i - 1);
                     fetchedAllStops = false;
@@ -284,11 +284,19 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
                 departures[filtered] = departures[i];
             }
             filtered++;
+        } else {
+            DEBUG_PRINTF("Filtering out bus %s from %s: leave in %d min (departs in %d, walk %d min) - TOO LATE\n",
+                        departures[i].busNumber.c_str(),
+                        departures[i].stopName.c_str(),
+                        leaveIn,
+                        departures[i].minutesUntilDeparture,
+                        departures[i].walkingTimeMinutes);
         }
     }
     
-    // Display up to 3 buses (or all available if less than 3)
-    count = min(filtered, 3);  // Limit to 3 for display, but show all we have if less
+    // Return all catchable buses we found (but limit to 3 for display)
+    // We always try to show 3 buses if available
+    count = min(filtered, 3);
     
     DEBUG_PRINTF("Found %d valid departures after filtering (used %d API calls, fetched %s stops)\n", 
                  count, lastApiCallCount, fetchedAllStops ? "all" : "some");
@@ -341,15 +349,27 @@ bool TransportAPIClient::parseStopDepartures(const String& jsonResponse, const B
     }
     
     JsonObject departuresObj = doc["departures"];
-    if (departuresObj.isNull()) {
-        DEBUG_PRINTLN("No departures object in response");
-        return false;
+    if (departuresObj.isNull() || departuresObj.size() == 0) {
+        DEBUG_PRINTLN("No departures object in response OR departures object is empty");
+        // This is not necessarily an error - just means no buses for this stop at this time
+        return true; // Return true but currentCount won't be incremented
     }
     
     // DEBUG: Print all routes in the response
-    DEBUG_PRINTLN("Routes in response:");
+    DEBUG_PRINTLN("Routes in API response:");
     for (JsonPair kv : departuresObj) {
-        DEBUG_PRINTF("  Route %s: %d departures\n", kv.key().c_str(), kv.value().as<JsonArray>().size());
+        String routeKey = kv.key().c_str();
+        JsonArray routeArray = kv.value().as<JsonArray>();
+        DEBUG_PRINTF("  Route %s: %d departures\n", routeKey.c_str(), routeArray.size());
+        
+        // Also log first few directions for debugging
+        int logCount = min(3, (int)routeArray.size());
+        for (int idx = 0; idx < logCount; idx++) {
+            JsonObject dep = routeArray[idx];
+            String dir = dep["direction"].as<String>();
+            String line = dep["line"].as<String>();
+            DEBUG_PRINTF("    [%d] Bus %s to '%s'\n", idx, line.c_str(), dir.c_str());
+        }
     }
     
     // Iterate through routes
@@ -358,14 +378,23 @@ bool TransportAPIClient::parseStopDepartures(const String& jsonResponse, const B
         JsonArray routeDepartures = departuresObj[route];
         
         if (!routeDepartures.isNull()) {
+            DEBUG_PRINTF("Processing route %s: %d departures found\n", route, routeDepartures.size());
             for (JsonObject dep : routeDepartures) {
                 if (currentCount >= maxCount) break;
                 
                 String direction = dep["direction"].as<String>();
                 String line = dep["line"].as<String>();
                 
+                // Log the raw direction for debugging
+                DEBUG_PRINTF("  Checking bus %s to '%s' (current direction: %s)\n", 
+                            line.c_str(), direction.c_str(),
+                            currentDirection == TO_CHELTENHAM ? "TO_CHELTENHAM" : "TO_CHURCHDOWN");
+                
                 // Check if direction matches our filter
-                if (!isValidDestination(direction, currentDirection)) {
+                bool validDest = isValidDestination(direction, currentDirection);
+                if (!validDest) {
+                    DEBUG_PRINTF("  SKIPPED: Bus %s - direction '%s' does not match filter\n", 
+                                line.c_str(), direction.c_str());
                     continue;
                 }
                 
@@ -390,7 +419,11 @@ bool TransportAPIClient::parseStopDepartures(const String& jsonResponse, const B
                                   bestEstimate, displayTime, minutesUntil);
                 
                 // Skip if bus already departed
-                if (minutesUntil < 0) continue;
+                if (minutesUntil < 0) {
+                    DEBUG_PRINTF("  SKIPPED: Bus %s - already departed (minutesUntil: %d)\n", 
+                                line.c_str(), minutesUntil);
+                    continue;
+                }
                 
                 // Determine if live or scheduled
                 bool isLive = expectedTime.length() > 0;
@@ -494,10 +527,13 @@ bool TransportAPIClient::isValidDestination(const String& destination, Direction
     
     for (int i = 0; i < numTargets; i++) {
         if (lower.indexOf(targets[i]) >= 0) {
+            DEBUG_PRINTF("Direction match: '%s' contains '%s'\n", lower.c_str(), targets[i]);
             return true;
         }
     }
     
+    DEBUG_PRINTF("Direction NO MATCH: '%s' does not match any target for direction %s\n", 
+                lower.c_str(), dir == TO_CHELTENHAM ? "TO_CHELTENHAM" : "TO_CHURCHDOWN");
     return false;
 }
 

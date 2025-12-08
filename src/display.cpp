@@ -287,12 +287,14 @@ void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
         lastLeaveIn[i] = leaveIn;
     }
     
-    // Show message if no buses available
-    if (actualCount == 0) {
+    // Show message only if no buses available AND we're in active hours (not placeholder mode)
+    // Don't show error during sleep hours or when placeholder data is being shown
+    if (actualCount == 0 && !placeholderMode) {
         int32_t x = cardLeft + 20;
         int32_t y = cardAreaTop + 80;
+        String errorMsg = "No buses available";
         if (colorsInverted) {
-            writeln((GFXfont*)&BusStop, "Unable to obtain live bus information", &x, &y, frameBuffer);
+            writeln((GFXfont*)&BusStop, errorMsg.c_str(), &x, &y, frameBuffer);
         } else {
             FontProperties whiteText = {
                 .fg_color = 15,
@@ -300,7 +302,7 @@ void DisplayManager::showBusTimetable(BusDeparture departures[], int count,
                 .fallback_glyph = 0,
                 .flags = 0
             };
-            write_mode((GFXfont*)&BusStop, "Unable to obtain live bus information", &x, &y, frameBuffer, BLACK_ON_WHITE, &whiteText);
+            write_mode((GFXfont*)&BusStop, errorMsg.c_str(), &x, &y, frameBuffer, BLACK_ON_WHITE, &whiteText);
         }
     }
     
@@ -576,6 +578,114 @@ void DisplayManager::showLoading(const String& msg) {
     epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
     epd_poweroff_all();
     sleep();  // Ensure display sleeps after refresh
+}
+
+void DisplayManager::showOtaProgress(const String& message, int progressPercent) {
+    if (!initialized || !frameBuffer) return;
+    resetLoadingLog();
+    
+    // Clear screen completely with white background
+    memset(frameBuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
+    
+    const GFXfont* titleFont = (GFXfont*)&BusStop;
+    const GFXfont* smallFont = (GFXfont*)&BusStopSmall;
+    
+    int centerX = EPD_WIDTH / 2;
+    int32_t x, y;
+    
+    // Title: "Firmware Update"
+    String title = "Firmware Update";
+    int titleWidth = measureTextAdvance(title);
+    x = centerX - titleWidth / 2;
+    y = 100;
+    if (colorsInverted) {
+        writeln(titleFont, title.c_str(), &x, &y, frameBuffer);
+    } else {
+        FontProperties textProps = {
+            .fg_color = 0,
+            .bg_color = 15,
+            .fallback_glyph = 0,
+            .flags = 0
+        };
+        write_mode(titleFont, title.c_str(), &x, &y, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
+    
+    // Message text (e.g., "Installing v1.2.10...")
+    String displayMsg = message.length() > 0 ? message : "Installing update...";
+    int msgWidth = measureTextAdvance(displayMsg);
+    x = centerX - msgWidth / 2;
+    y += 40;
+    if (colorsInverted) {
+        writeln(smallFont, displayMsg.c_str(), &x, &y, frameBuffer);
+    } else {
+        FontProperties textProps = {
+            .fg_color = 0,
+            .bg_color = 15,
+            .fallback_glyph = 0,
+            .flags = 0
+        };
+        write_mode(smallFont, displayMsg.c_str(), &x, &y, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
+    
+    // Progress bar dimensions
+    int barWidth = 600;
+    int barHeight = 50;
+    int barX = centerX - barWidth / 2;
+    int barY = 280;
+    int borderWidth = 4;
+    
+    // Clamp progress to 0-100
+    int progress = constrain(progressPercent, 0, 100);
+    int filledWidth = (barWidth * progress) / 100;
+    
+    // Draw progress bar border (rectangle outline) - black border
+    // Top and bottom borders
+    drawFilledRect(barX, barY, barWidth, borderWidth, 0);  // Top
+    drawFilledRect(barX, barY + barHeight - borderWidth, barWidth, borderWidth, 0);  // Bottom
+    // Left and right borders
+    drawFilledRect(barX, barY, borderWidth, barHeight, 0);  // Left
+    drawFilledRect(barX + barWidth - borderWidth, barY, borderWidth, barHeight, 0);  // Right
+    
+    // Draw filled progress portion (inside the border)
+    if (filledWidth > borderWidth * 2) {
+        int fillX = barX + borderWidth;
+        int fillY = barY + borderWidth;
+        int fillW = filledWidth - (borderWidth * 2);
+        int fillH = barHeight - (borderWidth * 2);
+        drawFilledRect(fillX, fillY, fillW, fillH, 0);  // Black fill
+    } else if (filledWidth > 0) {
+        // If progress is very small, still show a minimum visible bar
+        int fillX = barX + borderWidth;
+        int fillY = barY + borderWidth;
+        int fillW = max(10, filledWidth - borderWidth);
+        int fillH = barHeight - (borderWidth * 2);
+        drawFilledRect(fillX, fillY, fillW, fillH, 0);
+    }
+    
+    // Percentage text below progress bar
+    String percentStr = String(progress) + "%";
+    int percentWidth = measureTextAdvance(percentStr);
+    x = centerX - percentWidth / 2;
+    y = barY + barHeight + 40;
+    if (colorsInverted) {
+        writeln(smallFont, percentStr.c_str(), &x, &y, frameBuffer);
+    } else {
+        FontProperties textProps = {
+            .fg_color = 0,
+            .bg_color = 15,
+            .fallback_glyph = 0,
+            .flags = 0
+        };
+        write_mode(smallFont, percentStr.c_str(), &x, &y, frameBuffer, BLACK_ON_WHITE, &textProps);
+    }
+    
+    // Refresh display
+    epd_poweron();
+    Rect_t fullScreen = {0, 0, EPD_WIDTH, EPD_HEIGHT};
+    epd_clear_area_cycles(fullScreen, 2, 40);
+    epd_draw_grayscale_image(epd_full_screen(), frameBuffer);
+    epd_poweroff_all();
+    sleep();
 }
 
 void DisplayManager::showNoData(const String& msg) {

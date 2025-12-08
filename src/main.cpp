@@ -91,7 +91,6 @@ void readBattery();
 void fetchAndDisplayBuses();
 void publishMqttState();
 void handleMqttCommand(const String& command);
-void populatePlaceholderDepartures(const String& reason);
 void handleDisplayTick(unsigned long now);
 void decrementDepartureCountdowns(unsigned long minutesElapsed);
 String formatFutureTime(int minutesAhead);
@@ -155,13 +154,13 @@ void setup() {
         
         // Set up OTA progress callbacks to show on display
         otaManager.setProgressCallback([](int progress) {
-            String msg = "Updating: " + String(progress) + "%";
-            display.showLoading(msg);
+            display.showOtaProgress("Installing firmware...", progress);
         });
         
         otaManager.setCompleteCallback([](bool success) {
             if (success) {
-                display.showLoading("Update complete! Rebooting...");
+                display.showOtaProgress("Update complete!", 100);
+                delay(2000);  // Show completion for 2 seconds
             } else {
                 display.showError("Update failed");
             }
@@ -169,13 +168,13 @@ void setup() {
         
         // Check for OTA updates on startup
         DEBUG_PRINTLN("Checking for firmware updates on startup...");
-        display.showLoading("Checking for updates...");
+        display.showOtaProgress("Checking for updates...", 0);
         delay(1000);  // Show checking message briefly
         if (otaManager.checkForUpdate()) {
             String latestVersion = otaManager.getLatestVersion();
             DEBUG_PRINTF("Update available! Current: %s, Latest: %s\n", FIRMWARE_VERSION, latestVersion.c_str());
-            display.showLoading("Installing v" + latestVersion + "...");
-            delay(2000);  // Show message briefly
+            display.showOtaProgress("Installing v" + latestVersion + "...", 0);
+            delay(1000);  // Show message briefly before starting
             otaManager.performUpdate(otaManager.getUpdateUrl());
             // performUpdate will reboot, so we won't reach here
         } else {
@@ -230,11 +229,9 @@ void loop() {
     bool activeHours = transportApi.isActiveHours();
     
     if (!activeHours && !sleepModeActive) {
-        populatePlaceholderDepartures("Sleeping 21:00-06:00");
-        display.showBusTimetable(departures, departureCount,
-                                  currentTimeStr, transportApi.getDirectionLabel(),
-                                  batteryPercent, wifiConnected, showingPlaceholderData,
-                                  true);  // Full refresh entering sleep
+        // Show clock display during sleep hours (no placeholder data)
+        display.showClock(currentTimeStr);
+        departureCount = 0;  // Clear bus data during sleep
         lastCountdownUpdate = now;
         lastDisplayRefresh = now;
         sleepModeActive = true;
@@ -283,13 +280,13 @@ void loop() {
     // Check for OTA updates hourly
     if (wifiConnected && (now - lastOtaCheck >= OTA_CHECK_INTERVAL_MS)) {
         DEBUG_PRINTLN("Checking for OTA updates (hourly check)...");
-        display.showLoading("Checking for updates...");
+        display.showOtaProgress("Checking for updates...", 0);
         delay(1000);  // Show checking message briefly
         if (otaManager.checkForUpdate()) {
             String latestVersion = otaManager.getLatestVersion();
             DEBUG_PRINTF("Update available! Current: %s, Latest: %s\n", FIRMWARE_VERSION, latestVersion.c_str());
-            display.showLoading("Installing v" + latestVersion + "...");
-            delay(2000);  // Show message briefly
+            display.showOtaProgress("Installing v" + latestVersion + "...", 0);
+            delay(1000);  // Show message briefly before starting
             otaManager.performUpdate(otaManager.getUpdateUrl());
             // performUpdate will reboot, so we won't reach here
         } else {
@@ -536,6 +533,11 @@ void readBattery() {
 void fetchAndDisplayBuses() {
     Direction currentDir = transportApi.getDirection();
     
+    DEBUG_PRINTLN("============================================");
+    DEBUG_PRINTLN("FETCHING BUS DATA");
+    DEBUG_PRINTF("Direction: %s\n", currentDir == TO_CHELTENHAM ? "TO_CHELTENHAM" : "TO_CHURCHDOWN");
+    DEBUG_PRINTLN("============================================");
+    
     bool success = transportApi.fetchDepartures(currentDir, departures, 20, departureCount);
     
     // Get the actual number of API calls made (optimized fetch stops early when it has enough)
@@ -544,30 +546,32 @@ void fetchAndDisplayBuses() {
     // Increment API call counter with actual calls made
     incrementApiCallCount(actualApiCalls);
     
-    DEBUG_PRINTF("API calls: %d calls made (optimized from max %d stops)\n",
+    DEBUG_PRINTF("\nAPI SUMMARY: %d calls made (optimized from max %d stops)\n",
                  actualApiCalls, (currentDir == TO_CHELTENHAM) ? 3 : 2);
+    DEBUG_PRINTF("Result: success=%d, count=%d buses\n\n", success, departureCount);
     
     if (success && departureCount > 0) {
         showingPlaceholderData = false;
         lastDataFetch = millis();  // Track when we got fresh data
-        DEBUG_PRINTF("Fetched %d departures\n", departureCount);
+        DEBUG_PRINTF("✓ Successfully fetched %d departures:\n", departureCount);
         
         // Log departures
         for (int i = 0; i < departureCount; i++) {
-            DEBUG_PRINTF("  %s: %s at %s (leave in %d min)\n",
+            int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
+            DEBUG_PRINTF("  [%d] %s: %s at %s (departs in %d min, walk %d min, leave in %d min)\n",
+                        i + 1,
                         departures[i].busNumber.c_str(),
                         departures[i].stopName.c_str(),
                         departures[i].departureTime.c_str(),
-                        departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes);
-        }
-        
-        // If we have fewer than 3 buses, try fetching more stops (if we didn't already fetch all)
-        // This ensures we always try to show 3 buses during active hours
-        if (departureCount < 3 && wifiConnected && transportApi.isActiveHours()) {
-            DEBUG_PRINTF("Only got %d buses, but this may be all available. Displaying what we have.\n", departureCount);
+                        departures[i].minutesUntilDeparture,
+                        departures[i].walkingTimeMinutes,
+                        leaveIn);
         }
     } else {
-        // Handle failure case - determine reason
+        // No data available - don't use placeholder, just show what we have (empty)
+        showingPlaceholderData = false;
+        departureCount = 0;  // Ensure count is 0 so display shows appropriate message
+        
         String reason = transportApi.getLastError();
         if (!wifiConnected) {
             reason = "No WiFi";
@@ -578,22 +582,22 @@ void fetchAndDisplayBuses() {
             if (reason.length() == 0) {
                 reason = "No catchable buses";
             }
-            DEBUG_PRINTLN("WARNING: fetchDepartures returned success but no buses available (all filtered out?)");
+            DEBUG_PRINTLN("✗ WARNING: fetchDepartures returned success but no buses available (all filtered out?)");
+            DEBUG_PRINTLN("This could mean:");
+            DEBUG_PRINTLN("  - All buses already departed");
+            DEBUG_PRINTLN("  - All buses are not catchable (leave in < 0)");
+            DEBUG_PRINTLN("  - Direction filtering removed all buses");
+            DEBUG_PRINTLN("  - No buses on target routes (94-98)");
         }
         
-        populatePlaceholderDepartures(reason);
-        DEBUG_PRINTF("Failed to fetch departures: %s (success=%d, count=%d)\n", 
+        DEBUG_PRINTF("✗ Failed to fetch departures: %s (success=%d, count=%d)\n", 
                     reason.c_str(), success, departureCount);
     }
     
-    // Safety check: ensure departureCount is never 0 when displaying
-    // This prevents the "Unable to obtain" error from showing
-    if (departureCount == 0) {
-        DEBUG_PRINTLN("ERROR: departureCount is 0! Populating placeholder data as fallback.");
-        populatePlaceholderDepartures("No data available");
-    }
+    DEBUG_PRINTLN("============================================\n");
     
     // Update display with full refresh (new data from API)
+    // If departureCount is 0, display will show appropriate message
     display.showBusTimetable(departures, departureCount,
                               currentTimeStr, transportApi.getDirectionLabel(),
                               batteryPercent, wifiConnected, showingPlaceholderData,
@@ -603,43 +607,7 @@ void fetchAndDisplayBuses() {
     lastDisplayRefresh = now;
 }
 
-void populatePlaceholderDepartures(const String& reason) {
-    // Fake placeholder data for UI testing
-    showingPlaceholderData = true;
-    DEBUG_PRINTF("Using placeholder data: %s\n", reason.c_str());
-    
-    // Fake bus 1
-    departures[0].busNumber = "X1";
-    departures[0].stopName = "Fake Stop Alpha";
-    departures[0].destination = "Testville";
-    departures[0].departureTime = "99:99";
-    departures[0].minutesUntilDeparture = 42;
-    departures[0].walkingTimeMinutes = 5;
-    departures[0].isLive = false;
-    departures[0].statusText = "DEMO DATA";
-    
-    // Fake bus 2
-    departures[1].busNumber = "Z9";
-    departures[1].stopName = "Sample Road";
-    departures[1].destination = "Nowhere";
-    departures[1].departureTime = "88:88";
-    departures[1].minutesUntilDeparture = 99;
-    departures[1].walkingTimeMinutes = 10;
-    departures[1].isLive = false;
-    departures[1].statusText = "DEMO DATA";
-    
-    // Fake bus 3
-    departures[2].busNumber = "00";
-    departures[2].stopName = "Placeholder Lane";
-    departures[2].destination = "Example City";
-    departures[2].departureTime = "77:77";
-    departures[2].minutesUntilDeparture = 123;
-    departures[2].walkingTimeMinutes = 15;
-    departures[2].isLive = false;
-    departures[2].statusText = "DEMO DATA";
-    
-    departureCount = 3;
-}
+// Placeholder function removed - we never use placeholder data
 
 void handleDisplayTick(unsigned long now) {
     if (departureCount == 0 && !showingPlaceholderData) {
