@@ -115,21 +115,41 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
     DEBUG_PRINTF("Fetching departures for %d stops (optimized: will stop when enough data)\n", stopCount);
     
     HTTPClient http;
-    const int TARGET_DEPARTURES = 3;  // We only need 3 buses for display
+    const int TARGET_DEPARTURES = 5;  // Fetch extra to account for deduplication (want 3 final)
     lastApiCallCount = 0;  // Reset counter
     
-    // Optimized: Fetch stops incrementally, starting with closest, stopping when we have enough
+    // Optimized: Fetch stops incrementally, starting with closest
     // Stops are already ordered by distance (closest first)
+    // We'll always fetch at least the first stop, then continue if needed
+    bool fetchedAllStops = false;
+    
     for (int i = 0; i < stopCount; i++) {
         String url = buildUrl(stops[i].atcocode);
         DEBUG_PRINTF("Fetching: %s (stop %d/%d)\n", stops[i].name, i + 1, stopCount);
         
-        http.begin(secureClient, url);
-        http.setTimeout(15000);
-        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        // Retry logic for failed requests
+        int httpCode = 0;
+        int retries = 0;
+        const int MAX_RETRIES = 2;
         
-        int httpCode = http.GET();
-        lastApiCallCount++;  // Count this API call
+        while (retries <= MAX_RETRIES && httpCode != HTTP_CODE_OK) {
+            http.begin(secureClient, url);
+            http.setTimeout(15000);
+            http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+            
+            httpCode = http.GET();
+            
+            if (httpCode != HTTP_CODE_OK && retries < MAX_RETRIES) {
+                DEBUG_PRINTF("HTTP error for %s: %d, retrying... (%d/%d)\n", stops[i].name, httpCode, retries + 1, MAX_RETRIES);
+                http.end();
+                delay(500 * (retries + 1));  // Exponential backoff
+                retries++;
+            } else {
+                break;
+            }
+        }
+        
+        lastApiCallCount++;  // Count this API call (even if failed after retries)
         
         if (httpCode == HTTP_CODE_OK) {
             String response = http.getString();
@@ -140,31 +160,14 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
             DEBUG_PRINTLN(preview);
             DEBUG_PRINTLN("---");
             
-            int countBefore = count;
             if (!parseStopDepartures(response, stops[i], departures, count, maxDepartures)) {
                 DEBUG_PRINTF("Warning: Failed to parse departures for %s\n", stops[i].name);
             }
-            
-            // Count how many valid departures we have (after filtering for catchable buses)
-            int validCount = 0;
-            for (int j = 0; j < count; j++) {
-                int leaveIn = departures[j].minutesUntilDeparture - departures[j].walkingTimeMinutes;
-                if (leaveIn >= 0) {
-                    validCount++;
-                }
-            }
-            
-            DEBUG_PRINTF("After %s: %d total departures, %d catchable\n", stops[i].name, count, validCount);
-            
-            // If we have enough catchable buses, stop fetching more stops
-            if (validCount >= TARGET_DEPARTURES) {
-                DEBUG_PRINTF("Got enough departures (%d >= %d), stopping early. Saved %d API calls!\n", 
-                            validCount, TARGET_DEPARTURES, stopCount - i - 1);
-                break;
-            }
         } else {
-            DEBUG_PRINTF("HTTP error for %s: %d\n", stops[i].name, httpCode);
-            lastError = "HTTP " + String(httpCode);
+            DEBUG_PRINTF("HTTP error for %s after %d retries: %d\n", stops[i].name, retries, httpCode);
+            if (lastError.length() == 0) {
+                lastError = "HTTP " + String(httpCode);
+            }
             // Continue to next stop even if this one failed
         }
         
@@ -172,6 +175,52 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
         
         // Small delay between requests to be nice to the API
         delay(100);
+        
+            // After fetching each stop, check if we should stop early
+            // We want to ensure we have enough unique catchable buses to guarantee 3 after deduplication
+            if (i < stopCount - 1 && count >= TARGET_DEPARTURES) {
+                // Count likely unique catchable buses
+                int likelyUniqueCatchable = 0;
+                for (int j = 0; j < count; j++) {
+                    // First check if catchable
+                    int leaveIn = departures[j].minutesUntilDeparture - departures[j].walkingTimeMinutes;
+                    if (leaveIn < 0) continue;  // Not catchable, skip
+                    
+                    // Check if this is a duplicate of any previous departure
+                    bool isUnique = true;
+                    for (int k = 0; k < j; k++) {
+                        // Same bus, same stop = likely duplicate
+                        if (departures[j].busNumber == departures[k].busNumber &&
+                            departures[j].stopName == departures[k].stopName) {
+                            // Check if times are very close (within 2 min = duplicate)
+                            int timeDiff = departures[j].minutesUntilDeparture - departures[k].minutesUntilDeparture;
+                            if (timeDiff < 0) timeDiff = -timeDiff;  // abs
+                            if (timeDiff <= 2) {
+                                isUnique = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (isUnique) {
+                        likelyUniqueCatchable++;
+                    }
+                }
+                
+                // Only stop early if we're confident we have 6+ unique catchable buses
+                // This ensures we'll have at least 3 after deduplication (which can be aggressive)
+                if (likelyUniqueCatchable >= 6) {
+                    DEBUG_PRINTF("Got enough unique catchable buses (%d >= 6), stopping early. Saved %d API calls!\n", 
+                                likelyUniqueCatchable, stopCount - i - 1);
+                    fetchedAllStops = false;
+                    break;
+                } else {
+                    DEBUG_PRINTF("Only %d unique catchable buses so far, continuing to fetch more stops to ensure 3...\n", likelyUniqueCatchable);
+                }
+            }
+            
+            if (i == stopCount - 1) {
+                fetchedAllStops = true;
+            }
     }
     
     // Sort departures by "leave in" time (departure time minus walking time)
@@ -218,7 +267,6 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
     count = unique;
     
     // Filter to only show buses we can catch (leave in >= 0)
-    // Note: This filtering was already partially done during incremental fetching
     int filtered = 0;
     for (int i = 0; i < count; i++) {
         int leaveIn = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
@@ -229,9 +277,14 @@ bool TransportAPIClient::fetchDepartures(Direction direction, BusDeparture* depa
             filtered++;
         }
     }
-    count = min(filtered, 3); // Max 3 buses on display
     
-    DEBUG_PRINTF("Found %d valid departures (used %d API calls)\n", count, lastApiCallCount);
+    // Display up to 3 buses (or all available if less than 3)
+    count = min(filtered, 3);  // Limit to 3 for display, but show all we have if less
+    
+    DEBUG_PRINTF("Found %d valid departures after filtering (used %d API calls, fetched %s stops)\n", 
+                 count, lastApiCallCount, fetchedAllStops ? "all" : "some");
+    
+    // Consider it successful if we have at least 1 bus (0 buses will show error message)
     return count > 0;
 }
 

@@ -529,6 +529,12 @@ void fetchAndDisplayBuses() {
                         departures[i].departureTime.c_str(),
                         departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes);
         }
+        
+        // If we have fewer than 3 buses, try fetching more stops (if we didn't already fetch all)
+        // This ensures we always try to show 3 buses during active hours
+        if (departureCount < 3 && wifiConnected && transportApi.isActiveHours()) {
+            DEBUG_PRINTF("Only got %d buses, but this may be all available. Displaying what we have.\n", departureCount);
+        }
     } else {
         String reason = transportApi.getLastError();
         if (!wifiConnected) {
@@ -757,13 +763,22 @@ unsigned long calculateOptimalRefreshInterval() {
         return 3600000;  // 1 hour
     }
     
-    // Estimate stops per refresh based on direction (optimized fetch may use fewer)
-    // We use average: typically 1-2 stops for Cheltenham, 1 for Churchdown
+    // Estimate stops per refresh based on direction
+    // With optimization: typically 1-2 stops for Cheltenham (often just 1), 1 for Churchdown
+    // We use a conservative estimate to ensure even distribution
     Direction currentDir = transportApi.getDirection();
-    int avgStopsPerRefresh = (currentDir == TO_CHELTENHAM) ? 2 : 1;  // Conservative average
+    int avgStopsPerRefresh = (currentDir == TO_CHELTENHAM) ? 1.5 : 1;  // More optimistic: 1.5 avg for Cheltenham
     
     // Calculate how many refreshes we can do with remaining calls
-    int maxRefreshes = remainingCalls / avgStopsPerRefresh;
+    // Use integer math but account for fractional average
+    int maxRefreshes;
+    if (currentDir == TO_CHELTENHAM) {
+        // For Cheltenham: 1.5 avg = 3 calls per 2 refreshes, so 2 refreshes per 3 calls
+        maxRefreshes = (remainingCalls * 2) / 3;
+    } else {
+        // For Churchdown: 1 call per refresh
+        maxRefreshes = remainingCalls;
+    }
     
     if (maxRefreshes <= 0) {
         // Can't even do one refresh
@@ -779,14 +794,20 @@ unsigned long calculateOptimalRefreshInterval() {
     unsigned long optimalInterval = remainingMs / maxRefreshes;
     
     // Ensure minimum interval of 5 minutes (300000ms) and max of 30 minutes (1800000ms)
+    // But allow up to 60 minutes if we're running low on API calls to ensure even distribution
     if (optimalInterval < 300000) {
         optimalInterval = 300000;  // Minimum 5 minutes
-    } else if (optimalInterval > 1800000) {
-        optimalInterval = 1800000;  // Maximum 30 minutes
+    } else if (optimalInterval > 3600000) {
+        optimalInterval = 3600000;  // Maximum 60 minutes (if very low on calls)
+    } else if (optimalInterval > 1800000 && remainingCalls > 50) {
+        // If we have plenty of calls left, cap at 30 minutes for better user experience
+        optimalInterval = 1800000;
     }
     
-    DEBUG_PRINTF("API rate calc: %d calls used, %d remaining, %d hours left, %d avg stops/refresh -> %lu ms interval\n",
-                 apiCallsToday, remainingCalls, remainingActiveHours, avgStopsPerRefresh, optimalInterval);
+    DEBUG_PRINTF("API rate calc: %d calls used, %d remaining, %d hours left, ~%.1f avg stops/refresh -> %lu ms interval (%.1f min)\n",
+                 apiCallsToday, remainingCalls, remainingActiveHours, 
+                 (currentDir == TO_CHELTENHAM) ? 1.5f : 1.0f, 
+                 optimalInterval, optimalInterval / 60000.0f);
     
     return optimalInterval;
 }
