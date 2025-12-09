@@ -374,11 +374,16 @@ bool OTAUpdateManager::performUpdate(const String& downloadUrl) {
             written += writtenBytes;
             updateProgress = (written * 100) / contentLength;
             
-            // Update display every 1% progress for smoother progress bar
+            // Update display every 5% progress to avoid too many full refreshes
+            // E-ink displays work better with fewer, full refreshes than many partial refreshes
             static int lastProgressPct = -1;
-            if (progressCallback && updateProgress != lastProgressPct) {
-                progressCallback(updateProgress);
-                lastProgressPct = updateProgress;
+            const int PROGRESS_INCREMENT = 5;  // Update every 5%
+            int roundedProgress = (updateProgress / PROGRESS_INCREMENT) * PROGRESS_INCREMENT;
+            
+            // Always update at 0%, 100%, and when we cross a 5% boundary
+            if (progressCallback && (roundedProgress != lastProgressPct || updateProgress == 0 || updateProgress >= 100)) {
+                progressCallback(updateProgress >= 100 ? 100 : roundedProgress);
+                lastProgressPct = roundedProgress;
             }
         }
         delay(1);
