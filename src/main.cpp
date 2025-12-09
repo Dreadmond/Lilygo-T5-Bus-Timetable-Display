@@ -52,6 +52,7 @@ unsigned long lastMqttPublish = 0;
 unsigned long lastBatteryRead = 0;
 unsigned long lastOtaCheck = 0;
 unsigned long lastDisplayRefresh = 0;
+unsigned long lastAutoRefetch = 0;  // Track last automatic refetch to prevent API spam
 unsigned long lastCountdownUpdate = 0;
 unsigned long lastFooterUpdate = 0;
 unsigned long lastDataFetch = 0;  // When we last got fresh data
@@ -610,6 +611,10 @@ void fetchAndDisplayBuses(bool forceFetchAll) {
     unsigned long now = millis();
     lastCountdownUpdate = now;
     lastDisplayRefresh = now;
+    
+    // Reset auto-refetch timer when we successfully fetch data
+    // This ensures normal refreshes also count toward the rate limit
+    lastAutoRefetch = now;
 }
 
 // Placeholder function removed - we never use placeholder data
@@ -690,13 +695,32 @@ void decrementDepartureCountdowns(unsigned long minutesElapsed) {
             DEBUG_PRINTF("Removed %d bus(es) that can't be caught. Remaining: %d\n", removed, departureCount);
             
             // If we have fewer than 3 buses, trigger a refetch to get more data
-            // IMPORTANT: Use forceFetchAll=true to fetch from ALL stops, getting buses further ahead in time
+            // IMPORTANT: Rate limit refetches to prevent API spam
+            // Only refetch if:
+            // 1. We're in active hours and have WiFi
+            // 2. At least 5 minutes have passed since last auto-refetch (or regular refresh)
+            // 3. At least 5 minutes have passed since lastBusUpdate
+            unsigned long now = millis();
+            const unsigned long MIN_AUTO_REFETCH_INTERVAL_MS = 300000;  // 5 minutes minimum between auto-refetches
+            
             if (departureCount < 3 && wifiConnected && transportApi.isActiveHours()) {
-                DEBUG_PRINTLN("⚠️ Fewer than 3 buses remaining. Triggering immediate refetch from ALL stops...");
-                DEBUG_PRINTLN("   This ensures we get buses further ahead in time, not just the same buses again.");
-                // Immediately refetch, forcing all stops to be checked
-                fetchAndDisplayBuses(true);  // forceFetchAll = true
-                // Don't reset lastBusUpdate here - the refetch just happened
+                unsigned long timeSinceLastRefetch = now - lastAutoRefetch;
+                unsigned long timeSinceLastUpdate = now - lastBusUpdate;
+                
+                if (timeSinceLastRefetch >= MIN_AUTO_REFETCH_INTERVAL_MS && 
+                    timeSinceLastUpdate >= MIN_AUTO_REFETCH_INTERVAL_MS) {
+                    DEBUG_PRINTLN("⚠️ Fewer than 3 buses remaining. Triggering refetch from ALL stops...");
+                    DEBUG_PRINTF("   (Last auto-refetch: %lu min ago, last update: %lu min ago)\n",
+                                timeSinceLastRefetch / 60000, timeSinceLastUpdate / 60000);
+                    // Refetch, forcing all stops to be checked
+                    fetchAndDisplayBuses(true);  // forceFetchAll = true
+                    lastAutoRefetch = now;
+                    // lastBusUpdate is set by fetchAndDisplayBuses
+                } else {
+                    DEBUG_PRINTLN("⚠️ Fewer than 3 buses, but rate-limited. Waiting before auto-refetch...");
+                    DEBUG_PRINTF("   (Need %lu min since last refetch, %lu min since last update)\n",
+                                MIN_AUTO_REFETCH_INTERVAL_MS / 60000, MIN_AUTO_REFETCH_INTERVAL_MS / 60000);
+                }
             }
         }
     }
