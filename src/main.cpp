@@ -620,6 +620,17 @@ void fetchAndDisplayBuses(bool forceFetchAll) {
 // Placeholder function removed - we never use placeholder data
 
 void handleDisplayTick(unsigned long now) {
+    // Handle sleep mode - update clock every minute
+    if (sleepModeActive) {
+        if (now - lastDisplayRefresh >= 60000) {  // Update every minute
+            updateCurrentTime();  // Ensure time string is current
+            display.showClock(currentTimeStr);
+            lastDisplayRefresh = now;
+        }
+        return;
+    }
+    
+    // Active hours mode - handle bus timetable updates
     if (departureCount == 0 && !showingPlaceholderData) {
         return;
     }
