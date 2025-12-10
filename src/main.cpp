@@ -198,6 +198,9 @@ void setup() {
         // Initial battery read
         readBattery();
         
+        // Wait a moment for time to sync before fetching bus data
+        delay(2000);
+        
         // Fetch initial bus data
         DEBUG_PRINTLN("Fetching initial bus data...");
         display.showLoading("Loading bus times...");

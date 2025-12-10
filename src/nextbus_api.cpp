@@ -529,8 +529,26 @@ void NextbusAPIClient::parseDepartureTime(const String& timeStr, const String& e
                                          String& displayTime, int& minutesUntil) {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
+        // Time not synced yet - still try to extract and display the time, but can't calculate minutes
+        String actualTimeStr = timeStr.length() > 0 ? timeStr : estimateStr;
+        if (actualTimeStr.length() >= 16 && actualTimeStr.indexOf('T') > 0) {
+            int tPos = actualTimeStr.indexOf('T');
+            if (tPos > 0) {
+                String timePortion = actualTimeStr.substring(tPos + 1);
+                int colonPos = timePortion.indexOf(':');
+                if (colonPos > 0) {
+                    int depHour = timePortion.substring(0, colonPos).toInt();
+                    int depMin = timePortion.substring(colonPos + 1, colonPos + 3).toInt();
+                    char timeBuf[6];
+                    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", depHour, depMin);
+                    displayTime = String(timeBuf);
+                    minutesUntil = 999;  // Large value so it doesn't get filtered out - will be recalculated once time syncs
+                    return;
+                }
+            }
+        }
         displayTime = "??:??";
-        minutesUntil = 0;
+        minutesUntil = 999;  // Don't filter out if time not synced
         return;
     }
     
@@ -546,6 +564,22 @@ void NextbusAPIClient::parseDepartureTime(const String& timeStr, const String& e
         int tPos = actualTimeStr.indexOf('T');
         if (tPos > 0) {
             String timePortion = actualTimeStr.substring(tPos + 1);
+            // Remove timezone offset if present (Z, +01:00, -05:00, etc.)
+            int zPos = timePortion.indexOf('Z');
+            int plusPos = timePortion.indexOf('+');
+            int minusPos = timePortion.indexOf('-', 1);  // Skip the minus in the time itself
+            int offsetPos = -1;
+            if (zPos > 0) {
+                offsetPos = zPos;
+            } else if (plusPos > 0) {
+                offsetPos = plusPos;
+            } else if (minusPos > 0) {
+                offsetPos = minusPos;
+            }
+            if (offsetPos > 0) {
+                timePortion = timePortion.substring(0, offsetPos);
+            }
+            
             int colonPos = timePortion.indexOf(':');
             if (colonPos > 0) {
                 int depHour = timePortion.substring(0, colonPos).toInt();
@@ -594,7 +628,7 @@ void NextbusAPIClient::parseDepartureTime(const String& timeStr, const String& e
     
     // No valid time string
     displayTime = "??:??";
-    minutesUntil = 0;
+    minutesUntil = 999;  // Don't filter out - might be a parsing issue
 }
 
 bool NextbusAPIClient::isValidDestination(const String& destination, Direction dir) {
