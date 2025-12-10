@@ -198,8 +198,23 @@ void setup() {
         // Initial battery read
         readBattery();
         
-        // Wait a moment for time to sync before fetching bus data
-        delay(2000);
+        // Wait for time to sync before fetching bus data
+        DEBUG_PRINTLN("Waiting for time sync...");
+        struct tm timeinfo;
+        int syncAttempts = 0;
+        while (!getLocalTime(&timeinfo) && syncAttempts < 20) {
+            delay(500);
+            syncAttempts++;
+            DEBUG_PRINT(".");
+        }
+        DEBUG_PRINTLN();
+        if (getLocalTime(&timeinfo)) {
+            char timeStr[20];
+            strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+            DEBUG_PRINTF("Time synced: %s\n", timeStr);
+        } else {
+            DEBUG_PRINTLN("WARNING: Time not synced, but proceeding anyway");
+        }
         
         // Fetch initial bus data
         DEBUG_PRINTLN("Fetching initial bus data...");
@@ -732,7 +747,14 @@ void decrementDepartureCountdowns(unsigned long minutesElapsed) {
             unsigned long now = millis();
             const unsigned long MIN_AUTO_REFETCH_INTERVAL_MS = 300000;  // 5 minutes minimum between auto-refetches
             
-            if (departureCount < 3 && wifiConnected && busApi.isActiveHours()) {
+            // If we have 0 buses, refetch immediately (no rate limit)
+            // Otherwise, rate limit refetches when we have 1-2 buses
+            if (departureCount == 0 && wifiConnected && busApi.isActiveHours()) {
+                DEBUG_PRINTLN("⚠️ No buses remaining. Triggering immediate refetch...");
+                fetchAndDisplayBuses(true);  // forceFetchAll = true
+                lastAutoRefetch = now;
+                // lastBusUpdate is set by fetchAndDisplayBuses
+            } else if (departureCount < 3 && wifiConnected && busApi.isActiveHours()) {
                 unsigned long timeSinceLastRefetch = now - lastAutoRefetch;
                 unsigned long timeSinceLastUpdate = now - lastBusUpdate;
                 

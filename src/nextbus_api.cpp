@@ -529,26 +529,9 @@ void NextbusAPIClient::parseDepartureTime(const String& timeStr, const String& e
                                          String& displayTime, int& minutesUntil) {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
-        // Time not synced yet - still try to extract and display the time, but can't calculate minutes
-        String actualTimeStr = timeStr.length() > 0 ? timeStr : estimateStr;
-        if (actualTimeStr.length() >= 16 && actualTimeStr.indexOf('T') > 0) {
-            int tPos = actualTimeStr.indexOf('T');
-            if (tPos > 0) {
-                String timePortion = actualTimeStr.substring(tPos + 1);
-                int colonPos = timePortion.indexOf(':');
-                if (colonPos > 0) {
-                    int depHour = timePortion.substring(0, colonPos).toInt();
-                    int depMin = timePortion.substring(colonPos + 1, colonPos + 3).toInt();
-                    char timeBuf[6];
-                    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", depHour, depMin);
-                    displayTime = String(timeBuf);
-                    minutesUntil = 999;  // Large value so it doesn't get filtered out - will be recalculated once time syncs
-                    return;
-                }
-            }
-        }
+        // Time not synced - return invalid values that will cause retry
         displayTime = "??:??";
-        minutesUntil = 999;  // Don't filter out if time not synced
+        minutesUntil = -1;  // Negative so it gets filtered out and we retry when time syncs
         return;
     }
     
@@ -591,6 +574,7 @@ void NextbusAPIClient::parseDepartureTime(const String& timeStr, const String& e
                 displayTime = String(timeBuf);
                 
                 // Calculate minutes until departure
+                // Note: API times are in local UK time (GMT/BST), so no conversion needed
                 int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
                 int depMinutes = depHour * 60 + depMin;
                 
@@ -600,6 +584,14 @@ void NextbusAPIClient::parseDepartureTime(const String& timeStr, const String& e
                 }
                 
                 minutesUntil = depMinutes - nowMinutes;
+                
+                // Sanity check - if result seems wrong, try next day
+                if (minutesUntil < -60) {
+                    // More than an hour in the past - probably wrong, try next day
+                    depMinutes += 24 * 60;
+                    minutesUntil = depMinutes - nowMinutes;
+                }
+                
                 return;
             }
         }
