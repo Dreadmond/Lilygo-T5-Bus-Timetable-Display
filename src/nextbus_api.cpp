@@ -257,7 +257,9 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
             // Need at least 5 catchable buses to ensure we have 3 after deduplication and filtering
             // Also need at least TARGET_DEPARTURES total to have enough data
             // IMPORTANT: Always fetch at least 2 stops to ensure we have enough variety
-            if (catchableCount >= MIN_CATCHABLE_FOR_EARLY_STOP && count >= TARGET_DEPARTURES && i >= 1) {
+            // Also ensure we have at least 3 catchable buses before stopping early
+            if (catchableCount >= MIN_CATCHABLE_FOR_EARLY_STOP && catchableCount >= 3 && 
+                count >= TARGET_DEPARTURES && i >= 1) {
                 DEBUG_PRINTF("Got enough catchable buses (%d >= %d) from %d stops, stopping early. Saved %d API calls!\n", 
                             catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, i + 1, stopCount - i - 1);
                 fetchedAllStops = false;
@@ -357,13 +359,16 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
     // The display will show the first 3, but we keep all so we can always show 3 if some become uncatchable
     count = filtered;
     
-    // If we have fewer than 3 catchable buses, log a warning
-    if (count < 3) {
-        DEBUG_PRINTF("WARNING: Only %d catchable buses found (need 3). This may be due to:\n", count);
+    // If we have fewer than 3 catchable buses and didn't fetch all stops, this is a problem
+    // (We should have fetched all stops if we don't have enough)
+    if (count < 3 && !fetchedAllStops) {
+        DEBUG_PRINTF("WARNING: Only %d catchable buses found (need 3) but didn't fetch all stops!\n", count);
+        DEBUG_PRINTLN("  This suggests early stopping logic may be too aggressive");
+    } else if (count < 3) {
+        DEBUG_PRINTF("WARNING: Only %d catchable buses found (need 3) after fetching all stops. This may be due to:\n", count);
         DEBUG_PRINTLN("  - All buses already departed or too late to catch");
         DEBUG_PRINTLN("  - No buses running on target routes at this time");
         DEBUG_PRINTLN("  - Direction filtering removed all buses");
-        DEBUG_PRINTLN("  - Not enough stops were fetched (may need to fetch all stops)");
     } else {
         DEBUG_PRINTF("Successfully collected %d catchable buses - will display first 3\n", count);
     }
