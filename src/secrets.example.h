@@ -25,11 +25,18 @@
 #define SECRET_MQTT_CLIENT_ID   "bus_timetable_eink"
 
 // ---------------------------------------------------------------------------
-// TransportAPI credentials
+// TransportAPI credentials (ORIGINAL - kept for regression)
 // https://www.transportapi.com/
 // ---------------------------------------------------------------------------
 #define SECRET_TRANSPORT_API_ID   "your_transportapi_app_id"
 #define SECRET_TRANSPORT_API_KEY  "your_transportapi_api_key"
+
+// ---------------------------------------------------------------------------
+// Nextbus/Traveline API credentials (NEW - PRIMARY API)
+// DO NOT COMMIT THESE TO GITHUB!
+// ---------------------------------------------------------------------------
+#define SECRET_NEXTBUS_USERNAME   "your_nextbus_username"
+#define SECRET_NEXTBUS_PASSWORD   "your_nextbus_password"
 
 // ---------------------------------------------------------------------------
 // OpenWeatherMap

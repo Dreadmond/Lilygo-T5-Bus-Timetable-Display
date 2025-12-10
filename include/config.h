@@ -41,11 +41,27 @@
 #define MQTT_COMMAND_TOPIC "bus_timetable/command"
 
 // ----------------------------------------------------------------------------
-// TRANSPORT API CONFIGURATION
+// API SELECTION
+// Set to true to use Nextbus API, false to use Transport API (original)
+// ----------------------------------------------------------------------------
+#define USE_NEXTBUS_API true  // Set to false to use original Transport API
+
+// ----------------------------------------------------------------------------
+// TRANSPORT API CONFIGURATION (ORIGINAL - kept for regression)
 // ----------------------------------------------------------------------------
 #define TRANSPORT_API_ID SECRET_TRANSPORT_API_ID
 #define TRANSPORT_API_KEY SECRET_TRANSPORT_API_KEY
 #define TRANSPORT_API_BASE "https://transportapi.com"
+
+// ----------------------------------------------------------------------------
+// NEXTBUS/TRAVELINE API CONFIGURATION (NEW - PRIMARY API)
+// ----------------------------------------------------------------------------
+#define NEXTBUS_API_USERNAME SECRET_NEXTBUS_USERNAME
+#define NEXTBUS_API_PASSWORD SECRET_NEXTBUS_PASSWORD
+// Traveline Nextbus API endpoint (from official documentation v2.7)
+// Uses HTTP (not HTTPS) and SIRI-SM XML format
+#define NEXTBUS_API_BASE "http://nextbus.mxdata.co.uk/nextbuses/1.0/1"
+#define NEXTBUS_API_DAILY_LIMIT 1000  // Max API calls per day (180,000 per 6 months = ~1000/day)
 
 // Bus stops configuration - To Cheltenham direction
 // From 88 Parton Road, GL3 2AY
@@ -88,7 +104,13 @@
 #define BUS_DATA_REFRESH_SLOW_MS 600000        // Slow refresh every 10 minutes
 #define ACTIVE_HOURS_START 6                    // 6 AM - screen wakes
 #define ACTIVE_HOURS_END 22                     // 9 PM - screen sleeps
-#define TRANSPORT_API_DAILY_LIMIT 300           // Max API calls allowed per day
+#define TRANSPORT_API_DAILY_LIMIT 300           // Max API calls allowed per day (Transport API)
+// Unified API daily limit - selects based on which API is active
+#if USE_NEXTBUS_API
+#define API_DAILY_LIMIT NEXTBUS_API_DAILY_LIMIT
+#else
+#define API_DAILY_LIMIT TRANSPORT_API_DAILY_LIMIT
+#endif
 
 // ----------------------------------------------------------------------------
 // BATTERY MONITORING

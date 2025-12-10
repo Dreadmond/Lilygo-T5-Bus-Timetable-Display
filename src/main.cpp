@@ -27,7 +27,13 @@
 #include <time.h>
 #include "config.h"
 #include "display.h"
+#if USE_NEXTBUS_API
+#include "nextbus_api.h"
+#define busApi nextbusApi
+#else
 #include "transport_api.h"
+#define busApi transportApi
+#endif
 #include "mqtt_ha.h"
 #include "ota_update.h"
 
@@ -138,9 +144,13 @@ void setup() {
         setupTime();
         updateCurrentTime();
         
-        // Initialize transport API
+        // Initialize bus API (Nextbus or Transport)
+        #if USE_NEXTBUS_API
+        DEBUG_PRINTLN("Initializing Nextbus API...");
+        #else
         DEBUG_PRINTLN("Initializing Transport API...");
-        transportApi.init();
+        #endif
+        busApi.init();
         
         // Initialize MQTT
         DEBUG_PRINTLN("Initializing MQTT...");
@@ -191,7 +201,7 @@ void setup() {
         // Fetch initial bus data
         DEBUG_PRINTLN("Fetching initial bus data...");
         display.showLoading("Loading bus times...");
-        if (transportApi.isActiveHours()) {
+        if (busApi.isActiveHours()) {
             fetchAndDisplayBuses();
         } else {
             // Sleep mode - show nice clock display
@@ -225,7 +235,7 @@ void loop() {
     
     // Update current time string
     updateCurrentTime();
-    bool activeHours = transportApi.isActiveHours();
+    bool activeHours = busApi.isActiveHours();
     
     if (!activeHours && !sleepModeActive) {
         // Show clock display during sleep hours (no placeholder data)
@@ -534,20 +544,25 @@ void readBattery() {
 // ============================================================================
 
 void fetchAndDisplayBuses(bool forceFetchAll) {
-    Direction currentDir = transportApi.getDirection();
+    Direction currentDir = busApi.getDirection();
     
     DEBUG_PRINTLN("============================================");
     DEBUG_PRINTLN("FETCHING BUS DATA");
+    #if USE_NEXTBUS_API
+    DEBUG_PRINTLN("Using: Nextbus/Traveline API");
+    #else
+    DEBUG_PRINTLN("Using: Transport API");
+    #endif
     DEBUG_PRINTF("Direction: %s\n", currentDir == TO_CHELTENHAM ? "TO_CHELTENHAM" : "TO_CHURCHDOWN");
     if (forceFetchAll) {
         DEBUG_PRINTLN("MODE: Force fetch all stops (refetch after buses became uncatchable)");
     }
     DEBUG_PRINTLN("============================================");
     
-    bool success = transportApi.fetchDepartures(currentDir, departures, 20, departureCount, forceFetchAll);
+    bool success = busApi.fetchDepartures(currentDir, departures, 20, departureCount, forceFetchAll);
     
     // Get the actual number of API calls made (optimized fetch stops early when it has enough)
-    int actualApiCalls = transportApi.getLastApiCallCount();
+    int actualApiCalls = busApi.getLastApiCallCount();
     
     // Increment API call counter with actual calls made
     incrementApiCallCount(actualApiCalls);
@@ -578,7 +593,7 @@ void fetchAndDisplayBuses(bool forceFetchAll) {
         showingPlaceholderData = false;
         departureCount = 0;  // Ensure count is 0 so display shows appropriate message
         
-        String reason = transportApi.getLastError();
+        String reason = busApi.getLastError();
         if (!wifiConnected) {
             reason = "No WiFi";
         } else if (!success && reason.length() == 0) {
@@ -605,7 +620,7 @@ void fetchAndDisplayBuses(bool forceFetchAll) {
     // Update display with full refresh (new data from API)
     // If departureCount is 0, display will show appropriate message
     display.showBusTimetable(departures, departureCount,
-                              currentTimeStr, transportApi.getDirectionLabel(),
+                              currentTimeStr, busApi.getDirectionLabel(),
                               batteryPercent, wifiConnected, showingPlaceholderData,
                               true);  // Force full refresh for new data
     unsigned long now = millis();
@@ -654,7 +669,7 @@ void handleDisplayTick(unsigned long now) {
     
     // Use partial refresh for countdown updates (faster, less flashing)
     display.showBusTimetable(departures, departureCount,
-                              currentTimeStr, transportApi.getDirectionLabel(),
+                              currentTimeStr, busApi.getDirectionLabel(),
                               batteryPercent, wifiConnected, showingPlaceholderData,
                               false);  // Partial refresh
     lastDisplayRefresh = now;
@@ -714,7 +729,7 @@ void decrementDepartureCountdowns(unsigned long minutesElapsed) {
             unsigned long now = millis();
             const unsigned long MIN_AUTO_REFETCH_INTERVAL_MS = 300000;  // 5 minutes minimum between auto-refetches
             
-            if (departureCount < 3 && wifiConnected && transportApi.isActiveHours()) {
+            if (departureCount < 3 && wifiConnected && busApi.isActiveHours()) {
                 unsigned long timeSinceLastRefetch = now - lastAutoRefetch;
                 unsigned long timeSinceLastUpdate = now - lastBusUpdate;
                 
@@ -775,7 +790,7 @@ void resetApiCounterIfNewDay() {
 void incrementApiCallCount(int calls) {
     apiCallsToday += calls;
     saveApiCounter();
-    DEBUG_PRINTF("API calls today: %d/%d\n", apiCallsToday, TRANSPORT_API_DAILY_LIMIT);
+    DEBUG_PRINTF("API calls today: %d/%d\n", apiCallsToday, API_DAILY_LIMIT);
 }
 
 unsigned long calculateOptimalRefreshInterval() {
@@ -810,7 +825,7 @@ unsigned long calculateOptimalRefreshInterval() {
     }
     
     // Calculate remaining API calls
-    int remainingCalls = TRANSPORT_API_DAILY_LIMIT - apiCallsToday;
+    int remainingCalls = API_DAILY_LIMIT - apiCallsToday;
     
     if (remainingCalls <= 0) {
         // Out of API calls for today - use very long interval
@@ -826,7 +841,7 @@ unsigned long calculateOptimalRefreshInterval() {
     // Estimate stops per refresh based on direction
     // With optimization: typically 1-2 stops for Cheltenham (often just 1), 1 for Churchdown
     // We use a conservative estimate to ensure even distribution
-    Direction currentDir = transportApi.getDirection();
+    Direction currentDir = busApi.getDirection();
     int avgStopsPerRefresh = (currentDir == TO_CHELTENHAM) ? 1.5 : 1;  // More optimistic: 1.5 avg for Cheltenham
     
     // Calculate how many refreshes we can do with remaining calls
@@ -904,7 +919,7 @@ void publishMqttState() {
         batteryPercent,
         batteryVoltage,
         WiFi.RSSI(),
-        transportApi.getDirectionLabel(),
+        busApi.getDirectionLabel(),
         departureCount,
         WiFi.localIP().toString(),
         FIRMWARE_VERSION
@@ -925,9 +940,9 @@ void handleMqttCommand(const String& command) {
     }
     else if (command == "toggle_direction") {
         DEBUG_PRINTLN("Direction toggle requested");
-        Direction current = transportApi.getDirection();
+        Direction current = busApi.getDirection();
         Direction newDir = (current == TO_CHELTENHAM) ? TO_CHURCHDOWN : TO_CHELTENHAM;
-        transportApi.setDirection(newDir);
+        busApi.setDirection(newDir);
         fetchAndDisplayBuses();
         publishMqttState();
     }
@@ -960,7 +975,7 @@ void handleMqttCommand(const String& command) {
         invertedColors = true;
         display.setInvertedColors(true);
         display.showBusTimetable(departures, departureCount,
-                                  currentTimeStr, transportApi.getDirectionLabel(),
+                                  currentTimeStr, busApi.getDirectionLabel(),
                                   batteryPercent, wifiConnected, showingPlaceholderData,
                                   true);
         unsigned long now = millis();
@@ -974,7 +989,7 @@ void handleMqttCommand(const String& command) {
         invertedColors = false;
         display.setInvertedColors(false);
         display.showBusTimetable(departures, departureCount,
-                                  currentTimeStr, transportApi.getDirectionLabel(),
+                                  currentTimeStr, busApi.getDirectionLabel(),
                                   batteryPercent, wifiConnected, showingPlaceholderData,
                                   true);
         unsigned long now = millis();
