@@ -11,7 +11,7 @@
 // ----------------------------------------------------------------------------
 // VERSION INFO
 // ----------------------------------------------------------------------------
-#define FIRMWARE_VERSION "1.3.2"
+#define FIRMWARE_VERSION "1.3.3"
 #define DEVICE_NAME "bus-timetable-eink"
 #define DEVICE_FRIENDLY_NAME "Bus Timetable Display"
 
@@ -103,7 +103,7 @@
 #define BUS_DATA_REFRESH_INTERVAL_MS 600000    // Refresh bus data every 10 minutes
 #define BUS_DATA_REFRESH_SLOW_MS 600000        // Slow refresh every 10 minutes
 #define ACTIVE_HOURS_START 6                    // 6 AM - screen wakes
-#define ACTIVE_HOURS_END 22                     // 9 PM - screen sleeps
+#define ACTIVE_HOURS_END 23                     // 11 PM - screen sleeps
 #define TRANSPORT_API_DAILY_LIMIT 300           // Max API calls allowed per day (Transport API)
 // Unified API daily limit - selects based on which API is active
 #if USE_NEXTBUS_API

@@ -577,7 +577,8 @@ void fetchAndDisplayBuses(bool forceFetchAll) {
     }
     DEBUG_PRINTLN("============================================");
     
-    bool success = busApi.fetchDepartures(currentDir, departures, 20, departureCount, forceFetchAll);
+    // Increase buffer size to collect more buses (need extra to ensure we always have 3)
+    bool success = busApi.fetchDepartures(currentDir, departures, 30, departureCount, forceFetchAll);
     
     // Get the actual number of API calls made (optimized fetch stops early when it has enough)
     int actualApiCalls = busApi.getLastApiCallCount();
@@ -747,8 +748,9 @@ void decrementDepartureCountdowns(unsigned long minutesElapsed) {
             unsigned long now = millis();
             const unsigned long MIN_AUTO_REFETCH_INTERVAL_MS = 300000;  // 5 minutes minimum between auto-refetches
             
-            // If we have 0 buses, refetch immediately (no rate limit)
-            // Otherwise, rate limit refetches when we have 1-2 buses
+            // If we have fewer than 3 buses, try to refetch to get more
+            // 0 buses: immediate refetch (no rate limit)
+            // 1-2 buses: rate-limited refetch (every 5 minutes)
             if (departureCount == 0 && wifiConnected && busApi.isActiveHours()) {
                 DEBUG_PRINTLN("⚠️ No buses remaining. Triggering immediate refetch...");
                 fetchAndDisplayBuses(true);  // forceFetchAll = true

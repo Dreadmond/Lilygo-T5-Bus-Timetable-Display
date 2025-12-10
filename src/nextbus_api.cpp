@@ -166,7 +166,8 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
     }
     
     HTTPClient http;
-    const int TARGET_DEPARTURES = 10;  // Fetch more to ensure we get at least 3 after filtering/deduplication
+    const int TARGET_DEPARTURES = 15;  // Fetch more to ensure we get at least 3 after filtering/deduplication
+    const int MIN_CATCHABLE_FOR_EARLY_STOP = 5;  // Need at least 5 catchable to stop early
     lastApiCallCount = 0;  // Reset counter
     
     // Optimized: Fetch stops incrementally, starting with closest
@@ -242,38 +243,27 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
         delay(100);
         
         // After fetching each stop, check if we should stop early
-        if (!forceFetchAll && i < stopCount - 1 && count >= TARGET_DEPARTURES) {
-            // Count likely unique catchable buses
-            int likelyUniqueCatchable = 0;
+        // Only stop if we have at least 5 catchable buses (to ensure we can show 3 after filtering)
+        if (!forceFetchAll && i < stopCount - 1) {
+            // Count catchable buses (don't worry about duplicates - we want multiple from same stop)
+            int catchableCount = 0;
             for (int j = 0; j < count; j++) {
                 int leaveIn = departures[j].minutesUntilDeparture - departures[j].walkingTimeMinutes;
-                if (leaveIn < 0) continue;  // Not catchable, skip
-                
-                // Check if this is a duplicate of any previous departure
-                bool isUnique = true;
-                for (int k = 0; k < j; k++) {
-                    if (departures[j].busNumber == departures[k].busNumber &&
-                        departures[j].stopName == departures[k].stopName) {
-                        int timeDiff = departures[j].minutesUntilDeparture - departures[k].minutesUntilDeparture;
-                        if (timeDiff < 0) timeDiff = -timeDiff;  // abs
-                        if (timeDiff <= 2) {
-                            isUnique = false;
-                            break;
-                        }
-                    }
-                }
-                if (isUnique) {
-                    likelyUniqueCatchable++;
+                if (leaveIn >= 0) {
+                    catchableCount++;
                 }
             }
             
-            if (likelyUniqueCatchable >= 10) {
-                DEBUG_PRINTF("Got enough unique catchable buses (%d >= 10), stopping early. Saved %d API calls!\n", 
-                            likelyUniqueCatchable, stopCount - i - 1);
+            // Need at least 5 catchable buses to ensure we have 3 after deduplication and filtering
+            // Also need at least TARGET_DEPARTURES total to have enough data
+            if (catchableCount >= MIN_CATCHABLE_FOR_EARLY_STOP && count >= TARGET_DEPARTURES) {
+                DEBUG_PRINTF("Got enough catchable buses (%d >= %d), stopping early. Saved %d API calls!\n", 
+                            catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, stopCount - i - 1);
                 fetchedAllStops = false;
                 break;
             } else {
-                DEBUG_PRINTF("Only %d unique catchable buses so far, continuing to fetch more stops to ensure 3...\n", likelyUniqueCatchable);
+                DEBUG_PRINTF("Only %d catchable buses (need %d) or %d total (need %d), continuing to fetch more stops...\n", 
+                            catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, count, TARGET_DEPARTURES);
             }
         } else if (forceFetchAll) {
             DEBUG_PRINTF("Force fetch mode: continuing to fetch all stops to get buses further ahead in time\n");
@@ -299,16 +289,19 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
         }
     }
     
-    // Remove exact duplicates only
+    // Remove exact duplicates only (same route, same stop, same time within 1 minute)
+    // Allow multiple buses from same stop if they're at different times (e.g., 94, 94, 97)
     int unique = 0;
     for (int i = 0; i < count; i++) {
         bool isDuplicate = false;
         
         for (int j = 0; j < unique; j++) {
+            // Only consider duplicate if same route, same stop, AND very close time (within 1 minute)
             if (departures[i].busNumber == departures[j].busNumber &&
                 departures[i].stopName == departures[j].stopName) {
                 int timeDiff = departures[i].minutesUntilDeparture - departures[j].minutesUntilDeparture;
-                if (timeDiff >= -2 && timeDiff <= 2) {
+                if (timeDiff < 0) timeDiff = -timeDiff;  // abs
+                if (timeDiff <= 1) {  // Only remove if within 1 minute (exact duplicate)
                     isDuplicate = true;
                     break;
                 }
@@ -343,8 +336,34 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
         }
     }
     
-    // Return all catchable buses we found (but limit to 3 for display)
-    count = min(filtered, 3);
+    // Return catchable buses - always show up to 3, but allow more if needed to ensure 3 unique
+    // Sort by "leave in" time again after filtering
+    if (filtered > 1) {
+        for (int i = 0; i < filtered - 1; i++) {
+            for (int j = i + 1; j < filtered; j++) {
+                int leaveInI = departures[i].minutesUntilDeparture - departures[i].walkingTimeMinutes;
+                int leaveInJ = departures[j].minutesUntilDeparture - departures[j].walkingTimeMinutes;
+                if (leaveInJ < leaveInI) {
+                    BusDeparture temp = departures[i];
+                    departures[i] = departures[j];
+                    departures[j] = temp;
+                }
+            }
+        }
+    }
+    
+    // Always try to show 3 buses - return all catchable buses sorted by "leave in" time
+    // The display will show the first 3, but we keep all so we can always show 3 if some become uncatchable
+    // If we have fewer than 3, that's okay - we'll show what we have
+    count = filtered;
+    
+    // If we have fewer than 3 catchable buses, log a warning
+    if (count < 3) {
+        DEBUG_PRINTF("WARNING: Only %d catchable buses found (need 3). This may be due to:\n", count);
+        DEBUG_PRINTLN("  - All buses already departed or too late to catch");
+        DEBUG_PRINTLN("  - No buses running on target routes at this time");
+        DEBUG_PRINTLN("  - Direction filtering removed all buses");
+    }
     
     DEBUG_PRINTF("Found %d valid departures after filtering (used %d API calls, fetched %s stops)\n", 
                  count, lastApiCallCount, fetchedAllStops ? "all" : "some");
@@ -414,7 +433,12 @@ bool NextbusAPIClient::parseSiriResponse(const String& xmlResponse, const BusSto
     int visitCount = 0;
     
     while ((visitPos = findNextTag(xmlResponse, "MonitoredStopVisit", visitPos)) != -1) {
-        if (currentCount >= maxCount) break;
+        // Don't limit here - collect all buses, we'll filter and sort later
+        // maxCount is just a safety limit to prevent buffer overflow
+        if (currentCount >= maxCount) {
+            DEBUG_PRINTF("Reached maxCount (%d), stopping collection from this stop\n", maxCount);
+            break;
+        }
         
         // Find the end of this MonitoredStopVisit
         int visitEnd = xmlResponse.indexOf("</MonitoredStopVisit>", visitPos);
