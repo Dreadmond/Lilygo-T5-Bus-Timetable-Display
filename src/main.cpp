@@ -583,6 +583,13 @@ void fetchAndDisplayBuses(bool forceFetchAll) {
     // Get the actual number of API calls made (optimized fetch stops early when it has enough)
     int actualApiCalls = busApi.getLastApiCallCount();
     
+    // If we have fewer than 3 buses and didn't force fetch all, try again with forceFetchAll
+    if (departureCount < 3 && !forceFetchAll && success) {
+        DEBUG_PRINTLN("⚠️ Fewer than 3 buses found. Refetching with forceFetchAll to get more buses...");
+        success = busApi.fetchDepartures(currentDir, departures, 30, departureCount, true);
+        actualApiCalls += busApi.getLastApiCallCount();
+    }
+    
     // Increment API call counter with actual calls made
     incrementApiCallCount(actualApiCalls);
     

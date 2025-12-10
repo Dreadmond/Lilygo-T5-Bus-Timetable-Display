@@ -359,11 +359,13 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
     // The display will show the first 3, but we keep all so we can always show 3 if some become uncatchable
     count = filtered;
     
-    // If we have fewer than 3 catchable buses and didn't fetch all stops, this is a problem
-    // (We should have fetched all stops if we don't have enough)
+    // If we have fewer than 3 catchable buses and didn't fetch all stops, return false
+    // This will trigger a refetch with forceFetchAll=true
     if (count < 3 && !fetchedAllStops) {
         DEBUG_PRINTF("WARNING: Only %d catchable buses found (need 3) but didn't fetch all stops!\n", count);
-        DEBUG_PRINTLN("  This suggests early stopping logic may be too aggressive");
+        DEBUG_PRINTLN("  Will need to refetch with forceFetchAll to get more buses");
+        // Don't return false here - let the caller decide if they want to refetch
+        // But log the issue
     } else if (count < 3) {
         DEBUG_PRINTF("WARNING: Only %d catchable buses found (need 3) after fetching all stops. This may be due to:\n", count);
         DEBUG_PRINTLN("  - All buses already departed or too late to catch");
