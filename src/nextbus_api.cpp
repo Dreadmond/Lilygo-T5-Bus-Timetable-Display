@@ -256,14 +256,15 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
             
             // Need at least 5 catchable buses to ensure we have 3 after deduplication and filtering
             // Also need at least TARGET_DEPARTURES total to have enough data
-            if (catchableCount >= MIN_CATCHABLE_FOR_EARLY_STOP && count >= TARGET_DEPARTURES) {
-                DEBUG_PRINTF("Got enough catchable buses (%d >= %d), stopping early. Saved %d API calls!\n", 
-                            catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, stopCount - i - 1);
+            // IMPORTANT: Always fetch at least 2 stops to ensure we have enough variety
+            if (catchableCount >= MIN_CATCHABLE_FOR_EARLY_STOP && count >= TARGET_DEPARTURES && i >= 1) {
+                DEBUG_PRINTF("Got enough catchable buses (%d >= %d) from %d stops, stopping early. Saved %d API calls!\n", 
+                            catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, i + 1, stopCount - i - 1);
                 fetchedAllStops = false;
                 break;
             } else {
-                DEBUG_PRINTF("Only %d catchable buses (need %d) or %d total (need %d), continuing to fetch more stops...\n", 
-                            catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, count, TARGET_DEPARTURES);
+                DEBUG_PRINTF("Only %d catchable buses (need %d) or %d total (need %d) from %d stops, continuing...\n", 
+                            catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, count, TARGET_DEPARTURES, i + 1);
             }
         } else if (forceFetchAll) {
             DEBUG_PRINTF("Force fetch mode: continuing to fetch all stops to get buses further ahead in time\n");
@@ -354,7 +355,6 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
     
     // Always try to show 3 buses - return all catchable buses sorted by "leave in" time
     // The display will show the first 3, but we keep all so we can always show 3 if some become uncatchable
-    // If we have fewer than 3, that's okay - we'll show what we have
     count = filtered;
     
     // If we have fewer than 3 catchable buses, log a warning
@@ -363,6 +363,9 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
         DEBUG_PRINTLN("  - All buses already departed or too late to catch");
         DEBUG_PRINTLN("  - No buses running on target routes at this time");
         DEBUG_PRINTLN("  - Direction filtering removed all buses");
+        DEBUG_PRINTLN("  - Not enough stops were fetched (may need to fetch all stops)");
+    } else {
+        DEBUG_PRINTF("Successfully collected %d catchable buses - will display first 3\n", count);
     }
     
     DEBUG_PRINTF("Found %d valid departures after filtering (used %d API calls, fetched %s stops)\n", 
