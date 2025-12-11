@@ -441,10 +441,16 @@ bool NextbusAPIClient::parseSiriResponse(const String& xmlResponse, const BusSto
     // Find all MonitoredStopVisit elements
     int visitPos = 0;
     int visitCount = 0;
+    const int MAX_VISITS_PER_STOP = 30;  // Safety limit to prevent memory issues
     
     while ((visitPos = findNextTag(xmlResponse, "MonitoredStopVisit", visitPos)) != -1) {
-        // Don't limit here - collect all buses, we'll filter and sort later
-        // maxCount is just a safety limit to prevent buffer overflow
+        // Safety limit: don't process more than MAX_VISITS_PER_STOP per stop
+        if (visitCount >= MAX_VISITS_PER_STOP) {
+            DEBUG_PRINTF("Reached MAX_VISITS_PER_STOP (%d) for this stop, stopping to prevent memory issues\n", 
+                        MAX_VISITS_PER_STOP);
+            break;
+        }
+        // CRITICAL: Check bounds BEFORE processing to prevent buffer overflow
         if (currentCount >= maxCount) {
             DEBUG_PRINTF("Reached maxCount (%d), stopping collection from this stop\n", maxCount);
             break;
@@ -453,6 +459,14 @@ bool NextbusAPIClient::parseSiriResponse(const String& xmlResponse, const BusSto
         // Find the end of this MonitoredStopVisit
         int visitEnd = xmlResponse.indexOf("</MonitoredStopVisit>", visitPos);
         if (visitEnd == -1) break;
+        
+        // Limit substring size to prevent memory issues (max 2KB per visit)
+        int visitLen = visitEnd - visitPos;
+        if (visitLen > 2048) {
+            DEBUG_PRINTF("Warning: MonitoredStopVisit too large (%d bytes), skipping\n", visitLen);
+            visitPos = visitEnd;
+            continue;
+        }
         
         String visitXml = xmlResponse.substring(visitPos, visitEnd);
         
@@ -536,6 +550,13 @@ bool NextbusAPIClient::parseSiriResponse(const String& xmlResponse, const BusSto
             statusText = isLive ? "Live" : "Scheduled";
         }
         
+        // CRITICAL: Double-check bounds before writing to prevent buffer overflow
+        if (currentCount >= maxCount) {
+            DEBUG_PRINTF("ERROR: currentCount (%d) >= maxCount (%d) before write! Aborting to prevent crash.\n", 
+                        currentCount, maxCount);
+            break;
+        }
+        
         // Build departure entry
         departures[currentCount].busNumber = route;
         departures[currentCount].stopName = String(stop.name);
@@ -546,13 +567,19 @@ bool NextbusAPIClient::parseSiriResponse(const String& xmlResponse, const BusSto
         departures[currentCount].isLive = isLive;
         departures[currentCount].statusText = statusText;
         
-        DEBUG_PRINTF("  ADDED: Bus %s from %s at %s (in %d min, walk %d)\n",
+        DEBUG_PRINTF("  ADDED: Bus %s from %s at %s (in %d min, walk %d) [count=%d/%d]\n",
                     route.c_str(), stop.name, displayTime.c_str(),
-                    minutesUntil, stop.walkingTimeMinutes);
+                    minutesUntil, stop.walkingTimeMinutes, currentCount + 1, maxCount);
         
         currentCount++;
         visitCount++;
         visitPos = visitEnd;
+        
+        // Safety check: if we're getting close to the limit, break early
+        if (currentCount >= maxCount - 1) {
+            DEBUG_PRINTF("Approaching maxCount limit, stopping collection from this stop\n");
+            break;
+        }
     }
     
     DEBUG_PRINTF("Parsed %d departures from SIRI-SM response\n", visitCount);
