@@ -414,20 +414,6 @@ void DisplayManager::drawBusCard(int cardIndex, const BusDeparture& departure, b
         write_mode((GFXfont*)&BusStopSmall, departure.departureTime.c_str(), &timeX, &timeY, frameBuffer, BLACK_ON_WHITE, &textProps);
     }
     
-    // Live/Scheduled status indicator (right-aligned, same Y as time)
-    if (departure.statusText.length() > 0) {
-        String statusDisplay = departure.isLive ? "LIVE" : "SCHED";
-        // Calculate text width for right alignment
-        int statusWidth = measureTextAdvance(statusDisplay);
-        int32_t statusX = cardRight - statusWidth - 15;  // 15px padding from right edge
-        int32_t statusY = innerTop + 22;  // Same Y as time
-        if (colorsInverted) {
-            writeln((GFXfont*)&BusStopSmall, statusDisplay.c_str(), &statusX, &statusY, frameBuffer);
-        } else {
-            write_mode((GFXfont*)&BusStopSmall, statusDisplay.c_str(), &statusX, &statusY, frameBuffer, BLACK_ON_WHITE, &textProps);
-        }
-    }
-    
     // Leave in text below (smaller font)
     int32_t leaveX = rightSectionLeft;
     int32_t leaveY = innerTop + innerHeight / 2 + 22;

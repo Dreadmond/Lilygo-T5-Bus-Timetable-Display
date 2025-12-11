@@ -211,6 +211,16 @@ void MQTTHomeAssistant::publishDiscoveryConfig() {
         "mdi:chip"
     );
     
+    // Daily API calls
+    publishSensorDiscovery(
+        "API Calls Today",
+        "api_calls_today",
+        nullptr,
+        "calls",
+        "{{ value_json.api_calls_today }}",
+        "mdi:api"
+    );
+    
     // Refresh button
     publishButtonDiscovery(
         "Refresh Display",
@@ -310,7 +320,7 @@ void MQTTHomeAssistant::publishButtonDiscovery(const char* name, const char* uni
 void MQTTHomeAssistant::publishState(int batteryPercent, float batteryVoltage,
                                       int rssi, const String& direction,
                                       int busCount, const String& ipAddress,
-                                      const String& version) {
+                                      const String& version, int apiCallsToday) {
     if (!mqttClient.connected()) return;
     
     JsonDocument doc;
@@ -322,6 +332,7 @@ void MQTTHomeAssistant::publishState(int batteryPercent, float batteryVoltage,
     doc["bus_count"] = busCount;
     doc["ip_address"] = ipAddress;
     doc["version"] = version;
+    doc["api_calls_today"] = apiCallsToday;
     
     String payload;
     serializeJson(doc, payload);

@@ -956,7 +956,8 @@ void publishMqttState() {
         busApi.getDirectionLabel(),
         departureCount,
         WiFi.localIP().toString(),
-        FIRMWARE_VERSION
+        FIRMWARE_VERSION,
+        apiCallsToday
     );
 }
 
