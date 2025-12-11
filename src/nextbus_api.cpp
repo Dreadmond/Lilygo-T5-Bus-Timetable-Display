@@ -166,11 +166,10 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
     }
     
     HTTPClient http;
-    const int TARGET_DEPARTURES = 15;  // Fetch more to ensure we get at least 3 after filtering/deduplication
-    const int MIN_CATCHABLE_FOR_EARLY_STOP = 5;  // Need at least 5 catchable to stop early
+    const int MAX_BUSES_PER_STOP = 3;  // Cap at 3 buses per stop to prevent memory issues
     lastApiCallCount = 0;  // Reset counter
     
-    // Optimized: Fetch stops incrementally, starting with closest
+    // Always fetch from ALL stops to get the best selection, but cap at 3 buses per stop
     bool fetchedAllStops = false;
     
     for (int i = 0; i < stopCount; i++) {
@@ -215,9 +214,13 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
             DEBUG_PRINTLN(preview);
             DEBUG_PRINTLN("---");
             
-            if (!parseSiriResponse(response, stops[i], departures, count, maxDepartures)) {
+            // Pass MAX_BUSES_PER_STOP to limit buses collected per stop
+            int countBeforeStop = count;
+            if (!parseSiriResponse(response, stops[i], departures, count, maxDepartures, MAX_BUSES_PER_STOP)) {
                 DEBUG_PRINTF("Warning: Failed to parse departures for %s (may be no buses running)\n", stops[i].name);
             }
+            int busesFromThisStop = count - countBeforeStop;
+            DEBUG_PRINTF("Collected %d buses from %s (total: %d)\n", busesFromThisStop, stops[i].name, count);
             
             if (count == 0 && i == 0) {
                 DEBUG_PRINTLN("WARNING: First stop returned no departures. This may indicate:");
@@ -242,36 +245,7 @@ bool NextbusAPIClient::fetchDepartures(Direction direction, BusDeparture* depart
         // Small delay between requests to be nice to the API
         delay(100);
         
-        // After fetching each stop, check if we should stop early
-        // Only stop if we have at least 5 catchable buses (to ensure we can show 3 after filtering)
-        if (!forceFetchAll && i < stopCount - 1) {
-            // Count catchable buses (don't worry about duplicates - we want multiple from same stop)
-            int catchableCount = 0;
-            for (int j = 0; j < count; j++) {
-                int leaveIn = departures[j].minutesUntilDeparture - departures[j].walkingTimeMinutes;
-                if (leaveIn >= 0) {
-                    catchableCount++;
-                }
-            }
-            
-            // Need at least 5 catchable buses to ensure we have 3 after deduplication and filtering
-            // Also need at least TARGET_DEPARTURES total to have enough data
-            // IMPORTANT: Always fetch at least 2 stops to ensure we have enough variety
-            // Also ensure we have at least 3 catchable buses before stopping early
-            if (catchableCount >= MIN_CATCHABLE_FOR_EARLY_STOP && catchableCount >= 3 && 
-                count >= TARGET_DEPARTURES && i >= 1) {
-                DEBUG_PRINTF("Got enough catchable buses (%d >= %d) from %d stops, stopping early. Saved %d API calls!\n", 
-                            catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, i + 1, stopCount - i - 1);
-                fetchedAllStops = false;
-                break;
-            } else {
-                DEBUG_PRINTF("Only %d catchable buses (need %d) or %d total (need %d) from %d stops, continuing...\n", 
-                            catchableCount, MIN_CATCHABLE_FOR_EARLY_STOP, count, TARGET_DEPARTURES, i + 1);
-            }
-        } else if (forceFetchAll) {
-            DEBUG_PRINTF("Force fetch mode: continuing to fetch all stops to get buses further ahead in time\n");
-        }
-        
+        // Always fetch all stops - no early stopping
         if (i == stopCount - 1) {
             fetchedAllStops = true;
         }
@@ -421,7 +395,7 @@ static int findNextTag(const String& xml, const String& tagName, int startPos) {
 
 bool NextbusAPIClient::parseSiriResponse(const String& xmlResponse, const BusStop& stop,
                                          BusDeparture* departures, int& currentCount, 
-                                         int maxCount) {
+                                         int maxCount, int maxPerStop) {
     // Parse SIRI-SM XML response according to Traveline API documentation v2.7
     // Structure: Siri > ServiceDelivery > StopMonitoringDelivery > MonitoredStopVisit[]
     
@@ -441,18 +415,29 @@ bool NextbusAPIClient::parseSiriResponse(const String& xmlResponse, const BusSto
     // Find all MonitoredStopVisit elements
     int visitPos = 0;
     int visitCount = 0;
+    int busesAddedFromThisStop = 0;  // Track how many buses we've added from this specific stop
     const int MAX_VISITS_PER_STOP = 30;  // Safety limit to prevent memory issues
     
     while ((visitPos = findNextTag(xmlResponse, "MonitoredStopVisit", visitPos)) != -1) {
+        // CRITICAL: Check bounds FIRST, before any String operations to prevent memory issues
+        // Cap at maxPerStop buses per stop (default 3)
+        if (busesAddedFromThisStop >= maxPerStop) {
+            DEBUG_PRINTF("Reached maxPerStop limit (%d) for %s, stopping collection from this stop\n", 
+                        maxPerStop, stop.name);
+            break;
+        }
+        
+        // Also check against maxCount as a safety net
+        if (currentCount >= maxCount) {
+            DEBUG_PRINTF("Reached maxCount limit (%d/%d), stopping to prevent buffer overflow\n", 
+                        currentCount, maxCount);
+            break;
+        }
+        
         // Safety limit: don't process more than MAX_VISITS_PER_STOP per stop
         if (visitCount >= MAX_VISITS_PER_STOP) {
             DEBUG_PRINTF("Reached MAX_VISITS_PER_STOP (%d) for this stop, stopping to prevent memory issues\n", 
                         MAX_VISITS_PER_STOP);
-            break;
-        }
-        // CRITICAL: Check bounds BEFORE processing to prevent buffer overflow
-        if (currentCount >= maxCount) {
-            DEBUG_PRINTF("Reached maxCount (%d), stopping collection from this stop\n", maxCount);
             break;
         }
         
@@ -550,36 +535,42 @@ bool NextbusAPIClient::parseSiriResponse(const String& xmlResponse, const BusSto
             statusText = isLive ? "Live" : "Scheduled";
         }
         
-        // CRITICAL: Double-check bounds before writing to prevent buffer overflow
-        if (currentCount >= maxCount) {
-            DEBUG_PRINTF("ERROR: currentCount (%d) >= maxCount (%d) before write! Aborting to prevent crash.\n", 
-                        currentCount, maxCount);
+        // CRITICAL: Final bounds check right before write - this is the last line of defense
+        // Check per-stop limit and overall array limit
+        if (busesAddedFromThisStop >= maxPerStop || currentCount >= maxCount || currentCount < 0) {
+            DEBUG_PRINTF("FATAL: Invalid currentCount (%d)! Per-stop max: %d, Array max: %d. Aborting write to prevent crash.\n", 
+                        currentCount, maxPerStop, maxCount);
             break;
         }
         
-        // Build departure entry
-        departures[currentCount].busNumber = route;
-        departures[currentCount].stopName = String(stop.name);
-        departures[currentCount].destination = direction;
-        departures[currentCount].departureTime = displayTime;
-        departures[currentCount].minutesUntilDeparture = minutesUntil;
-        departures[currentCount].walkingTimeMinutes = stop.walkingTimeMinutes;
-        departures[currentCount].isLive = isLive;
-        departures[currentCount].statusText = statusText;
+        // Build departure entry - use index variable for clarity and safety
+        int idx = currentCount;
         
-        DEBUG_PRINTF("  ADDED: Bus %s from %s at %s (in %d min, walk %d) [count=%d/%d]\n",
+        // One more paranoid check using the index variable
+        if (idx >= maxCount || idx < 0) {
+            DEBUG_PRINTF("FATAL: Invalid index %d! Array max: %d. Aborting.\n", 
+                        idx, maxCount);
+            break;
+        }
+        
+        departures[idx].busNumber = route;
+        departures[idx].stopName = stop.name;  // Direct assignment, no String() wrapper
+        departures[idx].destination = direction;
+        departures[idx].departureTime = displayTime;
+        departures[idx].minutesUntilDeparture = minutesUntil;
+        departures[idx].walkingTimeMinutes = stop.walkingTimeMinutes;
+        departures[idx].isLive = isLive;
+        departures[idx].statusText = statusText;
+        
+        DEBUG_PRINTF("  ADDED: Bus %s from %s at %s (in %d min, walk %d) [count=%d/%d, from_stop=%d/%d]\n",
                     route.c_str(), stop.name, displayTime.c_str(),
-                    minutesUntil, stop.walkingTimeMinutes, currentCount + 1, maxCount);
+                    minutesUntil, stop.walkingTimeMinutes, idx + 1, maxCount, 
+                    busesAddedFromThisStop + 1, maxPerStop);
         
         currentCount++;
+        busesAddedFromThisStop++;  // Increment per-stop counter
         visitCount++;
         visitPos = visitEnd;
-        
-        // Safety check: if we're getting close to the limit, break early
-        if (currentCount >= maxCount - 1) {
-            DEBUG_PRINTF("Approaching maxCount limit, stopping collection from this stop\n");
-            break;
-        }
     }
     
     DEBUG_PRINTF("Parsed %d departures from SIRI-SM response\n", visitCount);

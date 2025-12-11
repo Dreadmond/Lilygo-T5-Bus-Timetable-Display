@@ -90,7 +90,7 @@ private:
     
     // Parse SIRI-SM XML response
     bool parseSiriResponse(const String& xmlResponse, const BusStop& stop,
-                          BusDeparture* departures, int& currentCount, int maxCount);
+                          BusDeparture* departures, int& currentCount, int maxCount, int maxPerStop = 999);
     
     // Check if destination matches filter
     bool isValidDestination(const String& destination, Direction dir);
